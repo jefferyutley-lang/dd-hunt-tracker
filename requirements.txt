@@ -1,5 +1,6 @@
-streamlit>=1.28
-pandas>=2.0
-plotly>=5.18
-fpdf2>=2.7
-requests>=2.31
+streamlit
+supabase
+pandas
+plotly
+fpdf2
+python-dotenv
