@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
-from datetime import date, datetime, timedelta
+from datetime import date
 import os
 import requests
 
@@ -24,7 +24,6 @@ def get_weather_data(hunt_date):
     today = date.today()
 
     if hunt_date == today:
-        # Use forecast API for today
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
             "latitude": lat,
@@ -34,7 +33,6 @@ def get_weather_data(hunt_date):
             "forecast_days": 1
         }
     else:
-        # Use historical archive for past dates
         url = "https://archive-api.open-meteo.com/v1/archive"
         params = {
             "latitude": lat,
@@ -50,10 +48,10 @@ def get_weather_data(hunt_date):
         data = response.json()
         daily = data.get("daily", {})
 
-        high = round(daily.get("temperature_2m_max", [None])[0] or 50)
-        low = round(daily.get("temperature_2m_min", [None])[0] or 35)
-        rain = round(daily.get("precipitation_sum", [0])[0] or 0, 2)
-        wind_speed = round(daily.get("wind_speed_10m_max", [0])[0] or 0)
+        high = int(round(daily.get("temperature_2m_max", [50])[0] or 50))
+        low = int(round(daily.get("temperature_2m_min", [35])[0] or 35))
+        rain = float(round(daily.get("precipitation_sum", [0])[0] or 0, 2))
+        wind_speed = int(round(daily.get("wind_speed_10m_max", [0])[0] or 0))
         wind_dir = daily.get("wind_direction_10m_dominant", [None])[0]
 
         wind_text = f"{wind_speed} mph"
@@ -104,7 +102,7 @@ with tab2:
 
     hunt_date = st.date_input("Hunt Date", value=date.today())
 
-    # ====================== AUTO WEATHER ON DATE CHANGE ======================
+    # Auto Weather when date changes
     if "last_hunt_date" not in st.session_state:
         st.session_state.last_hunt_date = None
 
@@ -114,11 +112,11 @@ with tab2:
         if weather:
             st.session_state.auto_high = weather["high_temp"]
             st.session_state.auto_low = weather["low_temp"]
-            st.session_state.auto_rainfall = weather["rainfall"]
+            st.session_state.auto_rainfall = float(weather["rainfall"])
             st.session_state.auto_wind = weather["wind"]
-            st.success(f"Weather data loaded for {hunt_date}")
+            st.success(f"Weather loaded for {hunt_date}")
         else:
-            st.warning("Could not load weather data for this date.")
+            st.warning("Could not load weather for this date.")
 
     with st.form("submit_hunt"):
         location = st.text_input("Location / Blind")
@@ -126,7 +124,11 @@ with tab2:
         high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 50))
         low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 35))
         river_level = st.text_input("River Level")
-        rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1)
+        rainfall = st.number_input(
+            "Rainfall (inches)", 
+            value=float(st.session_state.get("auto_rainfall", 0.0)), 
+            step=0.1
+        )
 
         hunters = st.text_area("Hunters (one per line)")
 
@@ -148,7 +150,9 @@ with tab2:
 
         notes = st.text_area("Notes")
 
-        if st.form_submit_button("Submit Hunt"):
+        submitted = st.form_submit_button("Submit Hunt")
+
+        if submitted:
             data = {
                 "date": str(hunt_date),
                 "location": location,
@@ -189,4 +193,7 @@ with tab3:
 
 with tab4:
     st.header("Season Analytics")
-    st.write("Weekly totals and season rainfall coming soon...")
+    st.write("Weekly totals coming soon...")
+
+if st.session_state.logged_in:
+    pass
