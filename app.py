@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
-from datetime import datetime, date
+from datetime import date
 import os
 
 # ====================== SUPABASE CONNECTION ======================
@@ -42,26 +42,14 @@ def main_app():
 
     tab1, tab2, tab3, tab4 = st.tabs(["Dashboard", "Submit Daily Report", "View Hunt History", "Season Analytics"])
 
-    # ====================== DASHBOARD ======================
     with tab1:
         st.header("Dashboard")
         st.write("Welcome back!")
 
-    # ====================== SUBMIT DAILY REPORT ======================
     with tab2:
         st.header("Submit Daily Hunt Report")
 
         hunt_date = st.date_input("Hunt Date", value=date.today())
-
-        # ====================== AUTO LOAD WEATHER WHEN DATE CHANGES ======================
-        if "last_date" not in st.session_state:
-            st.session_state.last_date = None
-
-        if hunt_date != st.session_state.last_date:
-            st.session_state.last_date = hunt_date
-            # Here we would normally call the weather API
-            # For now we'll just show a message
-            st.info(f"Weather data would load for {hunt_date} (API integration coming next)")
 
         with st.form("submit_form"):
             location = st.text_input("Location / Blind")
@@ -73,7 +61,7 @@ def main_app():
 
             hunters = st.text_area("Hunters (one per line)")
 
-            st.subheader("Species")
+            st.subheader("Species Harvested")
             col1, col2 = st.columns(2)
             with col1:
                 mallard = st.number_input("Mallard", value=0)
@@ -119,7 +107,6 @@ def main_app():
                 supabase.table("hunts").insert(data).execute()
                 st.success("Hunt submitted successfully!")
 
-    # ====================== VIEW HUNT HISTORY ======================
     with tab3:
         st.header("View Hunt History")
         try:
@@ -132,26 +119,10 @@ def main_app():
         except Exception as e:
             st.error(str(e))
 
-    # ====================== SEASON ANALYTICS ======================
     with tab4:
         st.header("Season Analytics")
-        st.subheader("Weekly Totals")
-        try:
-            response = supabase.table("hunts").select("*").execute()
-            if response.data:
-                df = pd.DataFrame(response.data)
-                df["date"] = pd.to_datetime(df["date"])
-                df["week_start"] = df["date"] - pd.to_timedelta(df["date"].dt.dayofweek, unit="D")
-                weekly = df.groupby("week_start")["daily_total"].sum().reset_index()
-                weekly = weekly.sort_values("week_start")
-                weekly["Week"] = weekly["week_start"].dt.strftime("Week of %b %d")
-                st.bar_chart(weekly.set_index("Week")["daily_total"])
-            else:
-                st.info("No data yet.")
-        except Exception as e:
-            st.error(f"Error: {e}")
+        st.write("Weekly totals coming soon...")
 
-# ====================== RUN APP ======================
 if st.session_state.logged_in:
     main_app()
 else:
