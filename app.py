@@ -177,7 +177,7 @@ with st.sidebar:
     st.write("**Season:** 2025-2026")
 
 # ==================== MAIN APP ====================
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📝 Submit Report", "📋 Hunt History", "📈 Analytics"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📝 Submit Report", "📋 Hunt History", "📈 Analytics", "✏️ Edit Hunts"])
 
 # ==================== TAB 1: DASHBOARD ====================
 with tab1:
@@ -201,6 +201,22 @@ with tab1:
             col1.metric("🦆 Total Ducks (10 hunts)", int(total_ducks))
             col2.metric("🎯 Hunt Count", total_hunts)
             col3.metric("📊 Avg per Hunt", avg_per_hunt)
+            
+            st.divider()
+            
+            # Get all hunts for season graph
+            response_all = supabase.table("hunts").select("*").order("date", desc=False).execute()
+            if response_all.data:
+                df_all = pd.DataFrame(response_all.data)
+                df_all["date"] = pd.to_datetime(df_all["date"])
+                df_all["Total"] = df_all[SPECIES].sum(axis=1)
+                df_all = df_all.sort_values("date")
+                
+                # Cumulative total for the season
+                df_all["Cumulative Total"] = df_all["Total"].cumsum()
+                
+                st.subheader("📈 Season Cumulative Birds Harvested")
+                st.line_chart(df_all.set_index("date")[["Cumulative Total"]])
             
             st.divider()
             st.subheader("Recent Hunts")
@@ -246,6 +262,11 @@ with tab2:
         if river_level != "N/A":
             st.success(f"💧 River level loaded: {river_level}")
     
+    # Initialize session state for species counts if not exists
+    for species in SPECIES:
+        if f"species_{species}" not in st.session_state:
+            st.session_state[f"species_{species}"] = 0
+    
     with st.form("submit_hunt"):
         col1, col2 = st.columns(2)
         
@@ -261,15 +282,7 @@ with tab2:
             hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
             notes = st.text_area("Notes", placeholder="Any additional observations...")
         
-        # Species Harvested section with real-time total
-        col_title, col_total = st.columns([0.7, 0.3])
-        with col_title:
-            st.subheader("Species Harvested")
-        
-        # Initialize session state for species counts if not exists
-        for species in SPECIES:
-            if f"species_{species}" not in st.session_state:
-                st.session_state[f"species_{species}"] = 0
+        st.subheader("Species Harvested")
         
         col1, col2, col3 = st.columns(3)
         species_counts = {}
@@ -295,11 +308,7 @@ with tab2:
         for species, count in species_counts.items():
             st.session_state[f"species_{species}"] = count
         
-        total_ducks = sum(species_counts.values())
-        
-        # Display total on same line as header
-        with col_total:
-            st.metric("Total 🦆", total_ducks)
+        st.divider()
         
         if st.form_submit_button("✅ Submit Hunt", use_container_width=True):
             if not location:
@@ -329,6 +338,27 @@ with tab2:
                 except Exception as e:
                     logger.error(f"Submit hunt error: {str(e)}")
                     st.error(f"❌ Error submitting hunt: {str(e)}")
+    
+    # Display total ducks OUTSIDE the form for real-time updates
+    st.divider()
+    col_title, col_total = st.columns([0.7, 0.3])
+    with col_title:
+        st.write("")  # Spacer
+    with col_total:
+        total_ducks = sum([
+            st.session_state.get("species_mallard", 0),
+            st.session_state.get("species_gadwall", 0),
+            st.session_state.get("species_teal", 0),
+            st.session_state.get("species_pintail", 0),
+            st.session_state.get("species_wood_duck", 0),
+            st.session_state.get("species_widgeon", 0),
+            st.session_state.get("species_shoveler", 0),
+            st.session_state.get("species_canvasback", 0),
+            st.session_state.get("species_redhead", 0),
+            st.session_state.get("species_divers", 0),
+            st.session_state.get("species_geese", 0),
+        ])
+        st.metric("Total 🦆", total_ducks)
 
 # ==================== TAB 3: HUNT HISTORY ====================
 with tab3:
@@ -513,6 +543,107 @@ with tab4:
     except Exception as e:
         logger.error(f"Analytics error: {str(e)}")
         st.error(f"❌ Error loading analytics: {str(e)}")
+
+# ==================== TAB 5: EDIT HUNTS ====================
+with tab5:
+    st.header("Edit Hunts")
+    
+    try:
+        response = supabase.table("hunts").select("*").order("date", desc=True).execute()
+        
+        if response.data:
+            df = pd.DataFrame(response.data)
+            df["date"] = pd.to_datetime(df["date"])
+            
+            # Select hunt to edit
+            hunt_dates = df.sort_values("date", ascending=False)
+            hunt_options = [f"{row['date'].strftime('%b %d, %Y')} - {row['location']}" for _, row in hunt_dates.iterrows()]
+            selected_hunt_idx = st.selectbox("Select Hunt to Edit", range(len(hunt_options)), format_func=lambda x: hunt_options[x])
+            
+            selected_hunt = hunt_dates.iloc[selected_hunt_idx]
+            hunt_id = selected_hunt.get("id")
+            
+            st.divider()
+            st.subheader(f"Editing: {selected_hunt['date'].strftime('%b %d, %Y')} - {selected_hunt['location']}")
+            
+            with st.form("edit_hunt"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    location = st.text_input("Location / Blind", value=selected_hunt.get("location", ""))
+                    wind = st.text_input("Wind", value=selected_hunt.get("wind", ""))
+                    high_temp = st.number_input("High °F", value=int(selected_hunt.get("high_temp", 55)), min_value=-20, max_value=120)
+                    low_temp = st.number_input("Low °F", value=int(selected_hunt.get("low_temp", 40)), min_value=-20, max_value=120)
+                
+                with col2:
+                    river_level = st.text_input("River Level", value=selected_hunt.get("river_level", ""))
+                    rainfall = st.number_input("Rainfall (inches)", value=float(selected_hunt.get("rainfall", 0.0)), step=0.1, min_value=0.0)
+                    hunters = st.text_area("Hunters (one per line)", value=selected_hunt.get("hunters", ""))
+                    notes = st.text_area("Notes", value=selected_hunt.get("notes", ""))
+                
+                st.subheader("Species Harvested")
+                
+                col1, col2, col3 = st.columns(3)
+                species_counts = {}
+                
+                with col1:
+                    species_counts["mallard"] = st.number_input("Mallard", value=int(selected_hunt.get("mallard", 0)), min_value=0, key="edit_mallard")
+                    species_counts["gadwall"] = st.number_input("Gadwall", value=int(selected_hunt.get("gadwall", 0)), min_value=0, key="edit_gadwall")
+                    species_counts["teal"] = st.number_input("Teal", value=int(selected_hunt.get("teal", 0)), min_value=0, key="edit_teal")
+                    species_counts["pintail"] = st.number_input("Pintail", value=int(selected_hunt.get("pintail", 0)), min_value=0, key="edit_pintail")
+                
+                with col2:
+                    species_counts["wood_duck"] = st.number_input("Wood Duck", value=int(selected_hunt.get("wood_duck", 0)), min_value=0, key="edit_wood_duck")
+                    species_counts["widgeon"] = st.number_input("Widgeon", value=int(selected_hunt.get("widgeon", 0)), min_value=0, key="edit_widgeon")
+                    species_counts["shoveler"] = st.number_input("Shoveler", value=int(selected_hunt.get("shoveler", 0)), min_value=0, key="edit_shoveler")
+                    species_counts["canvasback"] = st.number_input("Canvasback", value=int(selected_hunt.get("canvasback", 0)), min_value=0, key="edit_canvasback")
+                
+                with col3:
+                    species_counts["redhead"] = st.number_input("Redhead", value=int(selected_hunt.get("redhead", 0)), min_value=0, key="edit_redhead")
+                    species_counts["divers"] = st.number_input("Divers", value=int(selected_hunt.get("divers", 0)), min_value=0, key="edit_divers")
+                    species_counts["geese"] = st.number_input("Geese", value=int(selected_hunt.get("geese", 0)), min_value=0, key="edit_geese")
+                
+                st.divider()
+                
+                col_save, col_delete = st.columns(2)
+                
+                with col_save:
+                    if st.form_submit_button("💾 Save Changes", use_container_width=True):
+                        try:
+                            update_data = {
+                                "location": location,
+                                "wind": wind,
+                                "high_temp": int(high_temp),
+                                "low_temp": int(low_temp),
+                                "river_level": river_level,
+                                "rainfall": float(rainfall),
+                                "hunters": hunters,
+                                "notes": notes,
+                                **species_counts
+                            }
+                            supabase.table("hunts").update(update_data).eq("id", hunt_id).execute()
+                            st.success("✅ Hunt updated successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            logger.error(f"Update hunt error: {str(e)}")
+                            st.error(f"❌ Error updating hunt: {str(e)}")
+                
+                with col_delete:
+                    if st.form_submit_button("🗑️ Delete Hunt", use_container_width=True, help="Delete this hunt record"):
+                        try:
+                            supabase.table("hunts").delete().eq("id", hunt_id).execute()
+                            st.success("✅ Hunt deleted successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            logger.error(f"Delete hunt error: {str(e)}")
+                            st.error(f"❌ Error deleting hunt: {str(e)}")
+        
+        else:
+            st.info("ℹ️ No hunts to edit yet")
+    
+    except Exception as e:
+        logger.error(f"Edit hunts error: {str(e)}")
+        st.error(f"❌ Error loading hunts: {str(e)}")
 
 # ==================== FOOTER ====================
 st.divider()
