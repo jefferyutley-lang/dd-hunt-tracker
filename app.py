@@ -34,6 +34,7 @@ if "logged_in" not in st.session_state:
     st.session_state.username = ""
 
 SPECIES = ["mallard", "gadwall", "teal", "pintail", "wood_duck", "widgeon", "shoveler", "canvasback", "redhead", "divers", "geese"]
+USGS_SITE_NUMBER = "07024175"  # Wolf River site
 
 # ==================== WEATHER FUNCTION ====================
 @st.cache_data(ttl=3600)
@@ -89,6 +90,41 @@ def get_weather_data(hunt_date):
     except Exception as e:
         logger.error(f"Unexpected weather error: {str(e)}")
         return {"high_temp": 55, "low_temp": 40, "rainfall": 0.0, "wind": "N/A"}
+
+# ==================== RIVER LEVEL FUNCTION ====================
+@st.cache_data(ttl=1800)
+def get_river_level():
+    """
+    Fetch real-time river level data from USGS Water Services API.
+    Returns gage height in feet for Wolf River (site 07024175).
+    """
+    try:
+        url = "https://waterservices.usgs.gov/nwis/iv/"
+        params = {
+            "format": "json",
+            "sites": USGS_SITE_NUMBER,
+            "parameterCd": "00065"  # 00065 = Gage height (feet)
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Extract gage height value
+        values = data.get("value", {}).get("timeSeries", [])
+        if values and len(values) > 0:
+            latest_data = values[0].get("values", [{}])[0].get("value", [{}])
+            if latest_data and len(latest_data) > 0:
+                gage_height = float(latest_data[-1].get("value"))
+                return f"{gage_height:.2f} ft"
+        
+        return "N/A"
+    except requests.RequestException as e:
+        logger.warning(f"River level API error: {str(e)}")
+        return "N/A"
+    except Exception as e:
+        logger.error(f"Unexpected river level error: {str(e)}")
+        return "N/A"
 
 # ==================== AUTHENTICATION ====================
 def show_login():
@@ -193,7 +229,7 @@ with tab2:
     
     hunt_date = st.date_input("Hunt Date", value=date.today())
     
-    # Auto-load weather when date changes
+    # Auto-load weather and river level when date changes
     if "last_hunt_date" not in st.session_state or hunt_date != st.session_state.last_hunt_date:
         st.session_state.last_hunt_date = hunt_date
         weather = get_weather_data(hunt_date)
@@ -203,6 +239,12 @@ with tab2:
             st.session_state.auto_rainfall = float(weather["rainfall"])
             st.session_state.auto_wind = weather["wind"]
             st.success(f"☀️ Weather loaded for {hunt_date.strftime('%b %d, %Y')}")
+        
+        # Load river level
+        river_level = get_river_level()
+        st.session_state.auto_river_level = river_level
+        if river_level != "N/A":
+            st.success(f"💧 River level loaded: {river_level}")
     
     with st.form("submit_hunt"):
         col1, col2 = st.columns(2)
@@ -214,7 +256,7 @@ with tab2:
             low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40), min_value=-20, max_value=120)
         
         with col2:
-            river_level = st.text_input("River Level", placeholder="e.g., 2.5 ft")
+            river_level = st.text_input("River Level", value=st.session_state.get("auto_river_level", ""), placeholder="e.g., 2.5 ft")
             rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1, min_value=0.0)
             hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
             notes = st.text_area("Notes", placeholder="Any additional observations...")
