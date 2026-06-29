@@ -5,53 +5,40 @@ from datetime import date
 import os
 import requests
 
-# ====================== SUPABASE ======================
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://fkkmjfzjhoigqwimmdcq.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZra21qZnpqaG9pZ3F3aW1tZGNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MTg3MzEsImV4cCI6MjA5ODE5NDczMX0.2wy4sQ0FsVdjCqcPQE1_m-vxAD-mRVsAVoyzOja1Qso")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ====================== SESSION STATE ======================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
 
-# ====================== WEATHER ======================
 def get_weather_data(hunt_date):
     lat = 36.68218
     lon = -89.37869
-    date_str = hunt_date.strftime("%Y-%m-%d")
-    today = date.today()
-
     try:
-        if hunt_date == today:
+        if hunt_date == date.today():
             url = "https://api.open-meteo.com/v1/forecast"
             params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"], "timezone": "America/Chicago", "forecast_days": 1}
         else:
             url = "https://archive-api.open-meteo.com/v1/archive"
-            params = {"latitude": lat, "longitude": lon, "start_date": date_str, "end_date": date_str, "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"], "timezone": "America/Chicago"}
-
+            params = {"latitude": lat, "longitude": lon, "start_date": hunt_date.strftime("%Y-%m-%d"), "end_date": hunt_date.strftime("%Y-%m-%d"), "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"], "timezone": "America/Chicago"}
+        
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         daily = data.get("daily", {})
-
-        high = int(round(daily.get("temperature_2m_max", [None])[0] or 55))
-        low = int(round(daily.get("temperature_2m_min", [None])[0] or 40))
+        high = int(round(daily.get("temperature_2m_max", [55])[0] or 55))
+        low = int(round(daily.get("temperature_2m_min", [40])[0] or 40))
         rain = float(round(daily.get("precipitation_sum", [0])[0] or 0, 2))
         wind_speed = int(round(daily.get("wind_speed_10m_max", [0])[0] or 0))
-        wind_dir = daily.get("wind_direction_10m_dominant", [None])[0]
-
-        wind_text = f"{wind_speed} mph"
-        if wind_dir:
-            directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-            idx = round((wind_dir % 360) / 22.5) % 16
-            wind_text = f"{wind_speed} mph {directions[idx]}"
-
+        wind_dir = daily.get("wind_direction_10m_dominant", [0])[0]
+        directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+        wind_text = f"{wind_speed} mph {directions[int((wind_dir % 360) / 22.5) % 16]}"
         return {"high_temp": high, "low_temp": low, "rainfall": rain, "wind": wind_text}
     except:
         return {"high_temp": 55, "low_temp": 40, "rainfall": 0.0, "wind": "N/A"}
 
-# ====================== LOGIN ======================
 def show_login():
     st.title("DD Hunt Tracker")
     with st.form("login"):
@@ -70,7 +57,6 @@ if not st.session_state.logged_in:
     show_login()
     st.stop()
 
-# ====================== MAIN APP ======================
 st.sidebar.image("dd_logo.png", width=160)
 st.sidebar.title("DD Hunt Tracker")
 st.sidebar.write(f"Logged in as: **{st.session_state.username}**")
@@ -80,39 +66,28 @@ if st.sidebar.button("Logout"):
 
 tab1, tab2, tab3, tab4 = st.tabs(["Dashboard", "Submit Daily Report", "View Hunt History", "Season Analytics"])
 
-# ====================== DASHBOARD ======================
 with tab1:
     st.header("Dashboard")
-    st.write("Welcome back to DD Hunt Tracker!")
-
     try:
         response = supabase.table("hunts").select("*").order("date", desc=True).limit(10).execute()
         if response.data:
             df = pd.DataFrame(response.data)
             df["Date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
-            
             species_cols = ["mallard", "gadwall", "teal", "pintail", "wood_duck", "widgeon", "shoveler", "canvasback", "redhead", "divers", "geese"]
             df["Highest Species"] = df[species_cols].idxmax(axis=1).str.replace("_", " ").str.title() + " " + df[species_cols].max(axis=1).astype(str)
-
             st.subheader("Recent Hunts")
-            display_df = df[["Date", "location", "Highest Species", "river_level"]].copy()
-            display_df.columns = ["Date", "Location", "Highest Species", "River Level"]
+            display_df = df[["Date", "location", "Highest Species", "river_level"]]
             st.dataframe(display_df, use_container_width=True)
         else:
-            st.info("No hunts logged yet.")
+            st.info("No hunts yet.")
     except Exception as e:
         st.error(str(e))
 
-# ====================== SUBMIT DAILY REPORT ======================
 with tab2:
     st.header("Submit Daily Hunt Report")
-
     hunt_date = st.date_input("Hunt Date", value=date.today())
 
-    if "last_hunt_date" not in st.session_state:
-        st.session_state.last_hunt_date = None
-
-    if hunt_date != st.session_state.last_hunt_date:
+    if "last_hunt_date" not in st.session_state or hunt_date != st.session_state.last_hunt_date:
         st.session_state.last_hunt_date = hunt_date
         weather = get_weather_data(hunt_date)
         if weather:
@@ -121,8 +96,6 @@ with tab2:
             st.session_state.auto_rainfall = float(weather["rainfall"])
             st.session_state.auto_wind = weather["wind"]
             st.success(f"Weather loaded for {hunt_date.strftime('%b %d, %Y')}")
-        else:
-            st.warning("Could not load weather.")
 
     with st.form("submit_hunt"):
         location = st.text_input("Location / Blind")
@@ -131,15 +104,9 @@ with tab2:
         low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40))
         river_level = st.text_input("River Level")
         rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1)
-
         hunters = st.text_area("Hunters (one per line)")
 
-        # Species Harvested Header with Live Total on same line
-        col_header1, col_header2 = st.columns([4, 1])
-        with col_header1:
-            st.subheader("Species Harvested")
-        with col_header2:
-            total_ducks = 0  # placeholder for now
+        st.subheader("Species Harvested")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -156,7 +123,6 @@ with tab2:
             divers = st.number_input("Divers", value=0)
             geese = st.number_input("Geese", value=0)
 
-        # Live Total Ducks
         total_ducks = mallard + gadwall + teal + pintail + wood_duck + widgeon + shoveler + canvasback + redhead + divers + geese
         st.metric("**Total Ducks**", total_ducks)
 
@@ -177,7 +143,7 @@ with tab2:
 
 with tab3:
     st.header("View Hunt History")
-    st.info("Full history, edit, delete, and export features coming in the next update.")
+    st.info("History tab coming in next update.")
 
 with tab4:
     st.header("Season Analytics")
