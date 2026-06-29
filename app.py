@@ -53,6 +53,7 @@ def get_weather_data(hunt_date):
                 "longitude": lon,
                 "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
                 "timezone": "America/Chicago",
+                "temperature_unit": "fahrenheit",
                 "forecast_days": 1
             }
         else:
@@ -63,7 +64,8 @@ def get_weather_data(hunt_date):
                 "start_date": hunt_date.strftime("%Y-%m-%d"),
                 "end_date": hunt_date.strftime("%Y-%m-%d"),
                 "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
-                "timezone": "America/Chicago"
+                "timezone": "America/Chicago",
+                "temperature_unit": "fahrenheit"
             }
         
         response = requests.get(url, params=params, timeout=10)
@@ -217,30 +219,45 @@ with tab2:
             hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
             notes = st.text_area("Notes", placeholder="Any additional observations...")
         
-        st.subheader("Species Harvested")
+        # Species Harvested section with real-time total
+        col_title, col_total = st.columns([0.7, 0.3])
+        with col_title:
+            st.subheader("Species Harvested")
+        
+        # Initialize session state for species counts if not exists
+        for species in SPECIES:
+            if f"species_{species}" not in st.session_state:
+                st.session_state[f"species_{species}"] = 0
         
         col1, col2, col3 = st.columns(3)
         species_counts = {}
         
         with col1:
-            species_counts["mallard"] = st.number_input("Mallard", value=0, min_value=0)
-            species_counts["gadwall"] = st.number_input("Gadwall", value=0, min_value=0)
-            species_counts["teal"] = st.number_input("Teal", value=0, min_value=0)
-            species_counts["pintail"] = st.number_input("Pintail", value=0, min_value=0)
+            species_counts["mallard"] = st.number_input("Mallard", value=st.session_state.get("species_mallard", 0), min_value=0, key="mallard_input")
+            species_counts["gadwall"] = st.number_input("Gadwall", value=st.session_state.get("species_gadwall", 0), min_value=0, key="gadwall_input")
+            species_counts["teal"] = st.number_input("Teal", value=st.session_state.get("species_teal", 0), min_value=0, key="teal_input")
+            species_counts["pintail"] = st.number_input("Pintail", value=st.session_state.get("species_pintail", 0), min_value=0, key="pintail_input")
         
         with col2:
-            species_counts["wood_duck"] = st.number_input("Wood Duck", value=0, min_value=0)
-            species_counts["widgeon"] = st.number_input("Widgeon", value=0, min_value=0)
-            species_counts["shoveler"] = st.number_input("Shoveler", value=0, min_value=0)
-            species_counts["canvasback"] = st.number_input("Canvasback", value=0, min_value=0)
+            species_counts["wood_duck"] = st.number_input("Wood Duck", value=st.session_state.get("species_wood_duck", 0), min_value=0, key="wood_duck_input")
+            species_counts["widgeon"] = st.number_input("Widgeon", value=st.session_state.get("species_widgeon", 0), min_value=0, key="widgeon_input")
+            species_counts["shoveler"] = st.number_input("Shoveler", value=st.session_state.get("species_shoveler", 0), min_value=0, key="shoveler_input")
+            species_counts["canvasback"] = st.number_input("Canvasback", value=st.session_state.get("species_canvasback", 0), min_value=0, key="canvasback_input")
         
         with col3:
-            species_counts["redhead"] = st.number_input("Redhead", value=0, min_value=0)
-            species_counts["divers"] = st.number_input("Divers", value=0, min_value=0)
-            species_counts["geese"] = st.number_input("Geese", value=0, min_value=0)
+            species_counts["redhead"] = st.number_input("Redhead", value=st.session_state.get("species_redhead", 0), min_value=0, key="redhead_input")
+            species_counts["divers"] = st.number_input("Divers", value=st.session_state.get("species_divers", 0), min_value=0, key="divers_input")
+            species_counts["geese"] = st.number_input("Geese", value=st.session_state.get("species_geese", 0), min_value=0, key="geese_input")
+        
+        # Update session state for next render
+        for species, count in species_counts.items():
+            st.session_state[f"species_{species}"] = count
         
         total_ducks = sum(species_counts.values())
-        st.metric("🦆 Total Ducks", total_ducks)
+        
+        # Display total on same line as header
+        with col_total:
+            st.metric("Total 🦆", total_ducks)
         
         if st.form_submit_button("✅ Submit Hunt", use_container_width=True):
             if not location:
@@ -263,7 +280,9 @@ with tab2:
                     }
                     supabase.table("hunts").insert(data).execute()
                     st.success("✅ Hunt submitted successfully!")
-                    # Clear form by rerunning
+                    # Clear species counts from session state
+                    for species in SPECIES:
+                        st.session_state[f"species_{species}"] = 0
                     st.rerun()
                 except Exception as e:
                     logger.error(f"Submit hunt error: {str(e)}")
