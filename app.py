@@ -90,6 +90,7 @@ with tab1:
         if response.data:
             df = pd.DataFrame(response.data)
             df["Date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
+            
             species_cols = ["mallard", "gadwall", "teal", "pintail", "wood_duck", "widgeon", "shoveler", "canvasback", "redhead", "divers", "geese"]
             df["Highest Species"] = df[species_cols].idxmax(axis=1).str.replace("_", " ").str.title() + " " + df[species_cols].max(axis=1).astype(str)
 
@@ -133,25 +134,24 @@ with tab2:
 
         hunters = st.text_area("Hunters (one per line)")
 
-        st.subheader("Species Harvested")
+               st.subheader("Species Harvested")
         col1, col2 = st.columns(2)
         with col1:
-            mallard = st.number_input("Mallard", value=0, key="mallard")
-            gadwall = st.number_input("Gadwall", value=0, key="gadwall")
-            teal = st.number_input("Teal", value=0, key="teal")
-            pintail = st.number_input("Pintail", value=0, key="pintail")
-            wood_duck = st.number_input("Wood Duck", value=0, key="wood_duck")
+            mallard = st.number_input("Mallard", value=0)
+            gadwall = st.number_input("Gadwall", value=0)
+            teal = st.number_input("Teal", value=0)
+            pintail = st.number_input("Pintail", value=0)
+            wood_duck = st.number_input("Wood Duck", value=0)
         with col2:
-            widgeon = st.number_input("Widgeon", value=0, key="widgeon")
-            shoveler = st.number_input("Shoveler", value=0, key="shoveler")
-            canvasback = st.number_input("Canvasback", value=0, key="canvasback")
-            redhead = st.number_input("Redhead", value=0, key="redhead")
-            divers = st.number_input("Divers", value=0, key="divers")
-            geese = st.number_input("Geese", value=0, key="geese")
+            widgeon = st.number_input("Widgeon", value=0)
+            shoveler = st.number_input("Shoveler", value=0)
+            canvasback = st.number_input("Canvasback", value=0)
+            redhead = st.number_input("Redhead", value=0)
+            divers = st.number_input("Divers", value=0)
+            geese = st.number_input("Geese", value=0)
 
         total_ducks = mallard + gadwall + teal + pintail + wood_duck + widgeon + shoveler + canvasback + redhead + divers + geese
         st.metric("**Total Ducks**", total_ducks)
-
         notes = st.text_area("Notes")
 
         if st.form_submit_button("Submit Hunt"):
