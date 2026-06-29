@@ -4,8 +4,6 @@ import pandas as pd
 from datetime import date
 import os
 import requests
-from io import BytesIO
-from fpdf import FPDF
 
 # ====================== SUPABASE ======================
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://fkkmjfzjhoigqwimmdcq.supabase.co")
@@ -37,8 +35,8 @@ def get_weather_data(hunt_date):
         data = response.json()
         daily = data.get("daily", {})
 
-        high = int(round(daily.get("temperature_2m_max", [50])[0] or 50))
-        low = int(round(daily.get("temperature_2m_min", [35])[0] or 35))
+        high = int(round(daily.get("temperature_2m_max", [None])[0] or 55))
+        low = int(round(daily.get("temperature_2m_min", [None])[0] or 40))
         rain = float(round(daily.get("precipitation_sum", [0])[0] or 0, 2))
         wind_speed = int(round(daily.get("wind_speed_10m_max", [0])[0] or 0))
         wind_dir = daily.get("wind_direction_10m_dominant", [None])[0]
@@ -46,12 +44,12 @@ def get_weather_data(hunt_date):
         wind_text = f"{wind_speed} mph"
         if wind_dir:
             directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-            idx = round(wind_dir / 22.5) % 16
+            idx = round((wind_dir % 360) / 22.5) % 16
             wind_text = f"{wind_speed} mph {directions[idx]}"
 
         return {"high_temp": high, "low_temp": low, "rainfall": rain, "wind": wind_text}
     except:
-        return None
+        return {"high_temp": 55, "low_temp": 40, "rainfall": 0.0, "wind": "N/A"}
 
 # ====================== LOGIN ======================
 def show_login():
@@ -82,14 +80,32 @@ if st.sidebar.button("Logout"):
 
 tab1, tab2, tab3, tab4 = st.tabs(["Dashboard", "Submit Daily Report", "View Hunt History", "Season Analytics"])
 
-# Dashboard
+# ====================== DASHBOARD ======================
 with tab1:
     st.header("Dashboard")
-    st.write("Welcome to DD Hunt Tracker")
+    st.write("Welcome back to DD Hunt Tracker!")
 
-# Submit Daily Report
+    try:
+        response = supabase.table("hunts").select("*").order("date", desc=True).limit(10).execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            df["Date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
+            species_cols = ["mallard", "gadwall", "teal", "pintail", "wood_duck", "widgeon", "shoveler", "canvasback", "redhead", "divers", "geese"]
+            df["Highest Species"] = df[species_cols].idxmax(axis=1).str.replace("_", " ").str.title() + " " + df[species_cols].max(axis=1).astype(str)
+
+            st.subheader("Recent Hunts")
+            display_df = df[["Date", "location", "Highest Species", "river_level"]].copy()
+            display_df.columns = ["Date", "Location", "Highest Species", "River Level"]
+            st.dataframe(display_df, use_container_width=True)
+        else:
+            st.info("No hunts logged yet.")
+    except Exception as e:
+        st.error(str(e))
+
+# ====================== SUBMIT DAILY REPORT ======================
 with tab2:
     st.header("Submit Daily Hunt Report")
+
     hunt_date = st.date_input("Hunt Date", value=date.today())
 
     if "last_hunt_date" not in st.session_state:
@@ -105,13 +121,13 @@ with tab2:
             st.session_state.auto_wind = weather["wind"]
             st.success(f"Weather loaded for {hunt_date.strftime('%b %d, %Y')}")
         else:
-            st.warning("Could not load weather for this date.")
+            st.warning("Could not load weather.")
 
     with st.form("submit_hunt"):
         location = st.text_input("Location / Blind")
         wind = st.text_input("Wind", value=st.session_state.get("auto_wind", ""))
-        high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 50))
-        low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 35))
+        high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 55))
+        low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40))
         river_level = st.text_input("River Level")
         rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1)
 
@@ -120,56 +136,40 @@ with tab2:
         st.subheader("Species Harvested")
         col1, col2 = st.columns(2)
         with col1:
-            mallard = st.number_input("Mallard", value=0)
-            gadwall = st.number_input("Gadwall", value=0)
-            teal = st.number_input("Teal", value=0)
-            pintail = st.number_input("Pintail", value=0)
-            wood_duck = st.number_input("Wood Duck", value=0)
+            mallard = st.number_input("Mallard", value=0, key="mallard")
+            gadwall = st.number_input("Gadwall", value=0, key="gadwall")
+            teal = st.number_input("Teal", value=0, key="teal")
+            pintail = st.number_input("Pintail", value=0, key="pintail")
+            wood_duck = st.number_input("Wood Duck", value=0, key="wood_duck")
         with col2:
-            widgeon = st.number_input("Widgeon", value=0)
-            shoveler = st.number_input("Shoveler", value=0)
-            canvasback = st.number_input("Canvasback", value=0)
-            redhead = st.number_input("Redhead", value=0)
-            divers = st.number_input("Divers", value=0)
-            geese = st.number_input("Geese", value=0)
+            widgeon = st.number_input("Widgeon", value=0, key="widgeon")
+            shoveler = st.number_input("Shoveler", value=0, key="shoveler")
+            canvasback = st.number_input("Canvasback", value=0, key="canvasback")
+            redhead = st.number_input("Redhead", value=0, key="redhead")
+            divers = st.number_input("Divers", value=0, key="divers")
+            geese = st.number_input("Geese", value=0, key="geese")
 
         total_ducks = mallard + gadwall + teal + pintail + wood_duck + widgeon + shoveler + canvasback + redhead + divers + geese
-        st.metric("Total Ducks", total_ducks)
+        st.metric("**Total Ducks**", total_ducks)
 
         notes = st.text_area("Notes")
 
         if st.form_submit_button("Submit Hunt"):
             data = {
-                "date": str(hunt_date),
-                "location": location,
-                "wind": wind,
-                "high_temp": high_temp,
-                "low_temp": low_temp,
-                "river_level": river_level,
-                "rainfall": rainfall,
-                "hunters": hunters,
-                "mallard": mallard,
-                "gadwall": gadwall,
-                "teal": teal,
-                "pintail": pintail,
-                "wood_duck": wood_duck,
-                "widgeon": widgeon,
-                "shoveler": shoveler,
-                "canvasback": canvasback,
-                "redhead": redhead,
-                "divers": divers,
-                "geese": geese,
-                "notes": notes,
-                "season": "2025-2026",
-                "created_by": st.session_state.username
+                "date": str(hunt_date), "location": location, "wind": wind,
+                "high_temp": high_temp, "low_temp": low_temp, "river_level": river_level,
+                "rainfall": rainfall, "hunters": hunters,
+                "mallard": mallard, "gadwall": gadwall, "teal": teal, "pintail": pintail,
+                "wood_duck": wood_duck, "widgeon": widgeon, "shoveler": shoveler,
+                "canvasback": canvasback, "redhead": redhead, "divers": divers, "geese": geese,
+                "notes": notes, "season": "2025-2026", "created_by": st.session_state.username
             }
             supabase.table("hunts").insert(data).execute()
             st.success("Hunt submitted successfully!")
 
-# View Hunt History
 with tab3:
     st.header("View Hunt History")
-    st.info("Hunt history, edit, delete, and export features coming in next update.")
+    st.info("Full history, edit, delete, and export features coming in the next update.")
 
 with tab4:
     st.header("Season Analytics")
