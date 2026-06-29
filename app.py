@@ -134,8 +134,12 @@ with tab2:
 
         hunters = st.text_area("Hunters (one per line)")
 
-        # === SPECIES HARVESTED WITH LIVE TOTAL ===
-        st.subheader("Species Harvested")
+        # Species Harvested Header with Live Total on same line
+        col_header1, col_header2 = st.columns([4, 1])
+        with col_header1:
+            st.subheader("Species Harvested")
+        with col_header2:
+            total_ducks = 0  # placeholder for now
 
         col1, col2 = st.columns(2)
         with col1:
@@ -152,7 +156,7 @@ with tab2:
             divers = st.number_input("Divers", value=0)
             geese = st.number_input("Geese", value=0)
 
-        # Live Total Ducks - right under the header
+        # Live Total Ducks
         total_ducks = mallard + gadwall + teal + pintail + wood_duck + widgeon + shoveler + canvasback + redhead + divers + geese
         st.metric("**Total Ducks**", total_ducks)
 
