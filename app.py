@@ -256,3 +256,4 @@ with tab3:
 with tab4:
     st.header("Season Analytics")
     st.write("Weekly totals and season rainfall tracking coming soon...")
+Clean Grok Build rebuild - live totals, edit/delete, exports, date format, logo
