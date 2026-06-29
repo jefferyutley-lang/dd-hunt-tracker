@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
-from datetime import date, datetime
+from datetime import date
 import os
 import requests
 
@@ -26,23 +26,10 @@ def get_weather_data(hunt_date):
     try:
         if hunt_date == today:
             url = "https://api.open-meteo.com/v1/forecast"
-            params = {
-                "latitude": lat,
-                "longitude": lon,
-                "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
-                "timezone": "America/Chicago",
-                "forecast_days": 1
-            }
+            params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"], "timezone": "America/Chicago", "forecast_days": 1}
         else:
             url = "https://archive-api.open-meteo.com/v1/archive"
-            params = {
-                "latitude": lat,
-                "longitude": lon,
-                "start_date": date_str,
-                "end_date": date_str,
-                "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
-                "timezone": "America/Chicago"
-            }
+            params = {"latitude": lat, "longitude": lon, "start_date": date_str, "end_date": date_str, "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"], "timezone": "America/Chicago"}
 
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
@@ -60,12 +47,7 @@ def get_weather_data(hunt_date):
             idx = round(wind_dir / 22.5) % 16
             wind_text = f"{wind_speed} mph {directions[idx]}"
 
-        return {
-            "high_temp": high,
-            "low_temp": low,
-            "rainfall": rain,
-            "wind": wind_text
-        }
+        return {"high_temp": high, "low_temp": low, "rainfall": rain, "wind": wind_text}
     except:
         return None
 
@@ -90,6 +72,7 @@ if not st.session_state.logged_in:
 
 # ====================== MAIN APP ======================
 st.sidebar.title("DD Hunt Tracker")
+st.sidebar.image("dd_logo.png", width=180)
 st.sidebar.write(f"Logged in as: **{st.session_state.username}**")
 if st.sidebar.button("Logout"):
     st.session_state.logged_in = False
@@ -100,15 +83,28 @@ tab1, tab2, tab3, tab4 = st.tabs(["Dashboard", "Submit Daily Report", "View Hunt
 # ====================== DASHBOARD ======================
 with tab1:
     st.header("Dashboard")
-    st.write("Welcome back to DD Hunt Tracker!")
 
     try:
-        response = supabase.table("hunts").select("*").order("date", desc=True).limit(5).execute()
+        response = supabase.table("hunts").select("*").order("date", desc=True).limit(8).execute()
         if response.data:
-            st.subheader("Recent Hunts")
             df = pd.DataFrame(response.data)
             df["date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
-            st.dataframe(df[["date", "location", "high_temp", "low_temp", "rainfall"]])
+
+            # Find highest species for each hunt
+            species_cols = ["mallard", "gadwall", "teal", "pintail", "wood_duck", "widgeon", "shoveler", "canvasback", "redhead", "divers", "geese"]
+            df["Highest Species"] = df[species_cols].idxmax(axis=1).str.replace("_", " ").str.title() + " " + df[species_cols].max(axis=1).astype(str)
+
+            st.subheader("Recent Hunts")
+            display_df = df[["date", "location", "Highest Species", "river_level"]].copy()
+            display_df.columns = ["Date", "Location", "Highest Species", "River Level"]
+            st.dataframe(display_df, use_container_width=True)
+
+            # Cumulative harvest line chart
+            st.subheader("Season Harvest Trend")
+            df_sorted = df.sort_values("date")
+            df_sorted["Cumulative Ducks"] = df_sorted["mallard"] + df_sorted["gadwall"] + df_sorted["teal"] + df_sorted["pintail"] + df_sorted["wood_duck"] + df_sorted["widgeon"] + df_sorted["shoveler"] + df_sorted["canvasback"] + df_sorted["redhead"] + df_sorted["divers"] + df_sorted["geese"]
+            df_sorted["Cumulative Ducks"] = df_sorted["Cumulative Ducks"].cumsum()
+            st.line_chart(df_sorted.set_index("date")["Cumulative Ducks"])
         else:
             st.info("No hunts logged yet.")
     except Exception as e:
@@ -120,7 +116,6 @@ with tab2:
 
     hunt_date = st.date_input("Hunt Date", value=date.today())
 
-    # Auto Weather when date changes
     if "last_hunt_date" not in st.session_state:
         st.session_state.last_hunt_date = None
 
@@ -146,7 +141,9 @@ with tab2:
 
         hunters = st.text_area("Hunters (one per line)")
 
+        # Species + Live Total
         st.subheader("Species Harvested")
+        total_ducks = 0
 
         col1, col2 = st.columns(2)
         with col1:
@@ -163,7 +160,6 @@ with tab2:
             divers = st.number_input("Divers", value=0)
             geese = st.number_input("Geese", value=0)
 
-        # Total Ducks
         total_ducks = mallard + gadwall + teal + pintail + wood_duck + widgeon + shoveler + canvasback + redhead + divers + geese
         st.metric("Total Ducks", total_ducks)
 
@@ -199,7 +195,6 @@ with tab2:
             supabase.table("hunts").insert(data).execute()
             st.success("Hunt submitted successfully!")
 
-# ====================== VIEW HUNT HISTORY ======================
 with tab3:
     st.header("View Hunt History")
     try:
@@ -207,13 +202,12 @@ with tab3:
         if response.data:
             df = pd.DataFrame(response.data)
             df["date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
-            st.dataframe(df)
+            st.dataframe(df, use_container_width=True)
         else:
             st.info("No hunts yet.")
     except Exception as e:
         st.error(str(e))
 
-# ====================== SEASON ANALYTICS ======================
 with tab4:
     st.header("Season Analytics")
     st.write("Weekly totals and season rainfall tracking coming soon...")
