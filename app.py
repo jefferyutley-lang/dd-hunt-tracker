@@ -242,9 +242,9 @@ with tab1:
 # ==================== TAB 2: SUBMIT REPORT ====================
 with tab2:
     st.header("Submit Daily Hunt Report")
-    
+   
     hunt_date = st.date_input("Hunt Date", value=date.today())
-    
+   
     # Auto-load weather and river level when date changes
     if "last_hunt_date" not in st.session_state or hunt_date != st.session_state.last_hunt_date:
         st.session_state.last_hunt_date = hunt_date
@@ -255,97 +255,96 @@ with tab2:
             st.session_state.auto_rainfall = float(weather["rainfall"])
             st.session_state.auto_wind = weather["wind"]
             st.success(f"☀️ Weather loaded for {hunt_date.strftime('%b %d, %Y')}")
-        
-        # Load river level
+       
         river_level = get_river_level()
         st.session_state.auto_river_level = river_level
         if river_level != "N/A":
             st.success(f"💧 River level loaded: {river_level}")
-    
-    # Initialize session state for species counts if not exists
+
+    # Initialize species counts
     for species in SPECIES:
         if f"species_{species}" not in st.session_state:
             st.session_state[f"species_{species}"] = 0
-    
-    with st.form("submit_hunt"):
+
+    with st.form("submit_hunt", clear_on_submit=True):
         col1, col2 = st.columns(2)
-        
+       
         with col1:
             location = st.text_input("Location / Blind", placeholder="e.g., North Blind, Grand Island")
             wind = st.text_input("Wind", value=st.session_state.get("auto_wind", ""), placeholder="e.g., 10 mph N")
             high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 55), min_value=-20, max_value=120)
             low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40), min_value=-20, max_value=120)
-        
+       
         with col2:
             river_level = st.text_input("River Level", value=st.session_state.get("auto_river_level", ""), placeholder="e.g., 2.5 ft")
             rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1, min_value=0.0)
             hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
             notes = st.text_area("Notes", placeholder="Any additional observations...")
-        
+
         st.subheader("Species Harvested")
-        
+       
         col1, col2, col3 = st.columns(3)
-        
+       
         with col1:
-            st.number_input("Mallard", value=st.session_state.get("species_mallard", 0), min_value=0, key="mallard_input", on_change=lambda: st.session_state.update({"species_mallard": st.session_state.mallard_input}))
-            st.number_input("Gadwall", value=st.session_state.get("species_gadwall", 0), min_value=0, key="gadwall_input", on_change=lambda: st.session_state.update({"species_gadwall": st.session_state.gadwall_input}))
-            st.number_input("Teal", value=st.session_state.get("species_teal", 0), min_value=0, key="teal_input", on_change=lambda: st.session_state.update({"species_teal": st.session_state.teal_input}))
-            st.number_input("Pintail", value=st.session_state.get("species_pintail", 0), min_value=0, key="pintail_input", on_change=lambda: st.session_state.update({"species_pintail": st.session_state.pintail_input}))
-        
+            st.number_input("Mallard", min_value=0, key="species_mallard")
+            st.number_input("Gadwall", min_value=0, key="species_gadwall")
+            st.number_input("Teal", min_value=0, key="species_teal")
+            st.number_input("Pintail", min_value=0, key="species_pintail")
+       
         with col2:
-            st.number_input("Wood Duck", value=st.session_state.get("species_wood_duck", 0), min_value=0, key="wood_duck_input", on_change=lambda: st.session_state.update({"species_wood_duck": st.session_state.wood_duck_input}))
-            st.number_input("Widgeon", value=st.session_state.get("species_widgeon", 0), min_value=0, key="widgeon_input", on_change=lambda: st.session_state.update({"species_widgeon": st.session_state.widgeon_input}))
-            st.number_input("Shoveler", value=st.session_state.get("species_shoveler", 0), min_value=0, key="shoveler_input", on_change=lambda: st.session_state.update({"species_shoveler": st.session_state.shoveler_input}))
-            st.number_input("Canvasback", value=st.session_state.get("species_canvasback", 0), min_value=0, key="canvasback_input", on_change=lambda: st.session_state.update({"species_canvasback": st.session_state.canvasback_input}))
-        
+            st.number_input("Wood Duck", min_value=0, key="species_wood_duck")
+            st.number_input("Widgeon", min_value=0, key="species_widgeon")
+            st.number_input("Shoveler", min_value=0, key="species_shoveler")
+            st.number_input("Canvasback", min_value=0, key="species_canvasback")
+       
         with col3:
-            st.number_input("Redhead", value=st.session_state.get("species_redhead", 0), min_value=0, key="redhead_input", on_change=lambda: st.session_state.update({"species_redhead": st.session_state.redhead_input}))
-            st.number_input("Divers", value=st.session_state.get("species_divers", 0), min_value=0, key="divers_input", on_change=lambda: st.session_state.update({"species_divers": st.session_state.divers_input}))
-            st.number_input("Geese", value=st.session_state.get("species_geese", 0), min_value=0, key="geese_input", on_change=lambda: st.session_state.update({"species_geese": st.session_state.geese_input}))
-        
+            st.number_input("Redhead", min_value=0, key="species_redhead")
+            st.number_input("Divers", min_value=0, key="species_divers")
+            st.number_input("Geese", min_value=0, key="species_geese")
+
         st.divider()
-        
-        if st.form_submit_button("✅ Submit Hunt", use_container_width=True):
-            if not location:
-                st.error("❌ Location is required")
-            else:
-                try:
-                    species_counts = {
-                        "mallard": st.session_state.get("species_mallard", 0),
-                        "gadwall": st.session_state.get("species_gadwall", 0),
-                        "teal": st.session_state.get("species_teal", 0),
-                        "pintail": st.session_state.get("species_pintail", 0),
-                        "wood_duck": st.session_state.get("species_wood_duck", 0),
-                        "widgeon": st.session_state.get("species_widgeon", 0),
-                        "shoveler": st.session_state.get("species_shoveler", 0),
-                        "canvasback": st.session_state.get("species_canvasback", 0),
-                        "redhead": st.session_state.get("species_redhead", 0),
-                        "divers": st.session_state.get("species_divers", 0),
-                        "geese": st.session_state.get("species_geese", 0),
-                    }
-                    data = {
-                        "date": str(hunt_date),
-                        "location": location,
-                        "wind": wind,
-                        "high_temp": int(high_temp),
-                        "low_temp": int(low_temp),
-                        "river_level": river_level,
-                        "rainfall": float(rainfall),
-                        "hunters": hunters,
-                        "notes": notes,
-                        "season": "2025-2026",
-                        "created_by": st.session_state.username,
-                        **species_counts
-                    }
-                    supabase.table("hunts").insert(data).execute()
-                    st.success("✅ Hunt submitted successfully!")
-                    # Clear species counts from session state
-                    for species in SPECIES:
-                        st.session_state[f"species_{species}"] = 0
-                    st.rerun()
-                except Exception as e:
-                    logger.error(f"Submit hunt error: {str(e)}")
-                    st.error(f"❌ Error submitting hunt: {str(e)}")
+       
+        submitted = st.form_submit_button("✅ Submit Hunt", use_container_width=True)
+   
+    # Real-time total (outside form)
+    st.divider()
+    total_ducks = sum(st.session_state.get(f"species_{s}", 0) for s in SPECIES)
+    st.metric("Total 🦆", total_ducks)
+
+    if submitted:
+        if not location:
+            st.error("❌ Location is required")
+        else:
+            try:
+                species_counts = {s: st.session_state.get(f"species_{s}", 0) for s in SPECIES}
+               
+                data = {
+                    "date": str(hunt_date),
+                    "location": location,
+                    "wind": wind,
+                    "high_temp": int(high_temp),
+                    "low_temp": int(low_temp),
+                    "river_level": river_level,
+                    "rainfall": float(rainfall),
+                    "hunters": hunters,
+                    "notes": notes,
+                    "season": "2025-2026",
+                    "created_by": st.session_state.username,
+                    **species_counts
+                }
+               
+                supabase.table("hunts").insert(data).execute()
+                st.success("✅ Hunt submitted successfully!")
+               
+                # Reset species counts
+                for s in SPECIES:
+                    st.session_state[f"species_{s}"] = 0
+               
+                st.rerun()
+               
+            except Exception as e:
+                logger.error(f"Submit hunt error: {str(e)}")
+                st.error(f"❌ Error submitting hunt: {str(e)}")
     
     # Display total ducks OUTSIDE the form for real-time updates
     st.divider()
