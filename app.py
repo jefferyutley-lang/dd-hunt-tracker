@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import date
 import os
 import requests
+from io import BytesIO
 
 # ====================== SUPABASE ======================
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://fkkmjfzjhoigqwimmdcq.supabase.co")
@@ -16,7 +17,7 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
 
-# ====================== WEATHER FUNCTION ======================
+# ====================== WEATHER ======================
 def get_weather_data(hunt_date):
     lat = 36.68218
     lon = -89.37869
@@ -24,6 +25,9 @@ def get_weather_data(hunt_date):
     today = date.today()
 
     try:
+        if hunt_date > today:
+            return None  # Can't get future weather
+
         if hunt_date == today:
             url = "https://api.open-meteo.com/v1/forecast"
             params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"], "timezone": "America/Chicago", "forecast_days": 1}
@@ -72,7 +76,6 @@ if not st.session_state.logged_in:
 
 # ====================== MAIN APP ======================
 st.sidebar.title("DD Hunt Tracker")
-st.sidebar.image("dd_logo.png", width=180)
 st.sidebar.write(f"Logged in as: **{st.session_state.username}**")
 if st.sidebar.button("Logout"):
     st.session_state.logged_in = False
@@ -85,26 +88,25 @@ with tab1:
     st.header("Dashboard")
 
     try:
-        response = supabase.table("hunts").select("*").order("date", desc=True).limit(8).execute()
+        response = supabase.table("hunts").select("*").order("date", desc=True).limit(10).execute()
         if response.data:
             df = pd.DataFrame(response.data)
-            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
+            df["Date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
 
-            # Find highest species for each hunt
+            # Highest species
             species_cols = ["mallard", "gadwall", "teal", "pintail", "wood_duck", "widgeon", "shoveler", "canvasback", "redhead", "divers", "geese"]
             df["Highest Species"] = df[species_cols].idxmax(axis=1).str.replace("_", " ").str.title() + " " + df[species_cols].max(axis=1).astype(str)
 
             st.subheader("Recent Hunts")
-            display_df = df[["date", "location", "Highest Species", "river_level"]].copy()
+            display_df = df[["Date", "location", "Highest Species", "river_level"]].copy()
             display_df.columns = ["Date", "Location", "Highest Species", "River Level"]
             st.dataframe(display_df, use_container_width=True)
 
             # Cumulative harvest line chart
             st.subheader("Season Harvest Trend")
             df_sorted = df.sort_values("date")
-            df_sorted["Cumulative Ducks"] = df_sorted["mallard"] + df_sorted["gadwall"] + df_sorted["teal"] + df_sorted["pintail"] + df_sorted["wood_duck"] + df_sorted["widgeon"] + df_sorted["shoveler"] + df_sorted["canvasback"] + df_sorted["redhead"] + df_sorted["divers"] + df_sorted["geese"]
-            df_sorted["Cumulative Ducks"] = df_sorted["Cumulative Ducks"].cumsum()
-            st.line_chart(df_sorted.set_index("date")["Cumulative Ducks"])
+            df_sorted["Cumulative"] = df_sorted[species_cols].sum(axis=1).cumsum()
+            st.line_chart(df_sorted.set_index("Date")["Cumulative"])
         else:
             st.info("No hunts logged yet.")
     except Exception as e:
@@ -195,19 +197,21 @@ with tab2:
             supabase.table("hunts").insert(data).execute()
             st.success("Hunt submitted successfully!")
 
+# ====================== VIEW HUNT HISTORY ======================
 with tab3:
     st.header("View Hunt History")
     try:
         response = supabase.table("hunts").select("*").order("date", desc=True).execute()
         if response.data:
             df = pd.DataFrame(response.data)
-            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
+            df["Date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
             st.dataframe(df, use_container_width=True)
         else:
             st.info("No hunts yet.")
     except Exception as e:
         st.error(str(e))
 
+# ====================== SEASON ANALYTICS ======================
 with tab4:
     st.header("Season Analytics")
     st.write("Weekly totals and season rainfall tracking coming soon...")
