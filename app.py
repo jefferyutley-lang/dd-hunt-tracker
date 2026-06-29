@@ -285,28 +285,23 @@ with tab2:
         st.subheader("Species Harvested")
         
         col1, col2, col3 = st.columns(3)
-        species_counts = {}
         
         with col1:
-            species_counts["mallard"] = st.number_input("Mallard", value=st.session_state.get("species_mallard", 0), min_value=0, key="mallard_input")
-            species_counts["gadwall"] = st.number_input("Gadwall", value=st.session_state.get("species_gadwall", 0), min_value=0, key="gadwall_input")
-            species_counts["teal"] = st.number_input("Teal", value=st.session_state.get("species_teal", 0), min_value=0, key="teal_input")
-            species_counts["pintail"] = st.number_input("Pintail", value=st.session_state.get("species_pintail", 0), min_value=0, key="pintail_input")
+            st.number_input("Mallard", value=st.session_state.get("species_mallard", 0), min_value=0, key="mallard_input", on_change=lambda: st.session_state.update({"species_mallard": st.session_state.mallard_input}))
+            st.number_input("Gadwall", value=st.session_state.get("species_gadwall", 0), min_value=0, key="gadwall_input", on_change=lambda: st.session_state.update({"species_gadwall": st.session_state.gadwall_input}))
+            st.number_input("Teal", value=st.session_state.get("species_teal", 0), min_value=0, key="teal_input", on_change=lambda: st.session_state.update({"species_teal": st.session_state.teal_input}))
+            st.number_input("Pintail", value=st.session_state.get("species_pintail", 0), min_value=0, key="pintail_input", on_change=lambda: st.session_state.update({"species_pintail": st.session_state.pintail_input}))
         
         with col2:
-            species_counts["wood_duck"] = st.number_input("Wood Duck", value=st.session_state.get("species_wood_duck", 0), min_value=0, key="wood_duck_input")
-            species_counts["widgeon"] = st.number_input("Widgeon", value=st.session_state.get("species_widgeon", 0), min_value=0, key="widgeon_input")
-            species_counts["shoveler"] = st.number_input("Shoveler", value=st.session_state.get("species_shoveler", 0), min_value=0, key="shoveler_input")
-            species_counts["canvasback"] = st.number_input("Canvasback", value=st.session_state.get("species_canvasback", 0), min_value=0, key="canvasback_input")
+            st.number_input("Wood Duck", value=st.session_state.get("species_wood_duck", 0), min_value=0, key="wood_duck_input", on_change=lambda: st.session_state.update({"species_wood_duck": st.session_state.wood_duck_input}))
+            st.number_input("Widgeon", value=st.session_state.get("species_widgeon", 0), min_value=0, key="widgeon_input", on_change=lambda: st.session_state.update({"species_widgeon": st.session_state.widgeon_input}))
+            st.number_input("Shoveler", value=st.session_state.get("species_shoveler", 0), min_value=0, key="shoveler_input", on_change=lambda: st.session_state.update({"species_shoveler": st.session_state.shoveler_input}))
+            st.number_input("Canvasback", value=st.session_state.get("species_canvasback", 0), min_value=0, key="canvasback_input", on_change=lambda: st.session_state.update({"species_canvasback": st.session_state.canvasback_input}))
         
         with col3:
-            species_counts["redhead"] = st.number_input("Redhead", value=st.session_state.get("species_redhead", 0), min_value=0, key="redhead_input")
-            species_counts["divers"] = st.number_input("Divers", value=st.session_state.get("species_divers", 0), min_value=0, key="divers_input")
-            species_counts["geese"] = st.number_input("Geese", value=st.session_state.get("species_geese", 0), min_value=0, key="geese_input")
-        
-        # Update session state for next render
-        for species, count in species_counts.items():
-            st.session_state[f"species_{species}"] = count
+            st.number_input("Redhead", value=st.session_state.get("species_redhead", 0), min_value=0, key="redhead_input", on_change=lambda: st.session_state.update({"species_redhead": st.session_state.redhead_input}))
+            st.number_input("Divers", value=st.session_state.get("species_divers", 0), min_value=0, key="divers_input", on_change=lambda: st.session_state.update({"species_divers": st.session_state.divers_input}))
+            st.number_input("Geese", value=st.session_state.get("species_geese", 0), min_value=0, key="geese_input", on_change=lambda: st.session_state.update({"species_geese": st.session_state.geese_input}))
         
         st.divider()
         
@@ -315,6 +310,19 @@ with tab2:
                 st.error("❌ Location is required")
             else:
                 try:
+                    species_counts = {
+                        "mallard": st.session_state.get("species_mallard", 0),
+                        "gadwall": st.session_state.get("species_gadwall", 0),
+                        "teal": st.session_state.get("species_teal", 0),
+                        "pintail": st.session_state.get("species_pintail", 0),
+                        "wood_duck": st.session_state.get("species_wood_duck", 0),
+                        "widgeon": st.session_state.get("species_widgeon", 0),
+                        "shoveler": st.session_state.get("species_shoveler", 0),
+                        "canvasback": st.session_state.get("species_canvasback", 0),
+                        "redhead": st.session_state.get("species_redhead", 0),
+                        "divers": st.session_state.get("species_divers", 0),
+                        "geese": st.session_state.get("species_geese", 0),
+                    }
                     data = {
                         "date": str(hunt_date),
                         "location": location,
