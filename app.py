@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
-from datetime import date
+from datetime import date, datetime
 import os
 import requests
 
@@ -23,27 +23,27 @@ def get_weather_data(hunt_date):
     date_str = hunt_date.strftime("%Y-%m-%d")
     today = date.today()
 
-    if hunt_date == today:
-        url = "https://api.open-meteo.com/v1/forecast"
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
-            "timezone": "America/Chicago",
-            "forecast_days": 1
-        }
-    else:
-        url = "https://archive-api.open-meteo.com/v1/archive"
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "start_date": date_str,
-            "end_date": date_str,
-            "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
-            "timezone": "America/Chicago"
-        }
-
     try:
+        if hunt_date == today:
+            url = "https://api.open-meteo.com/v1/forecast"
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
+                "timezone": "America/Chicago",
+                "forecast_days": 1
+            }
+        else:
+            url = "https://archive-api.open-meteo.com/v1/archive"
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "start_date": date_str,
+                "end_date": date_str,
+                "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
+                "timezone": "America/Chicago"
+            }
+
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         daily = data.get("daily", {})
@@ -97,6 +97,24 @@ if st.sidebar.button("Logout"):
 
 tab1, tab2, tab3, tab4 = st.tabs(["Dashboard", "Submit Daily Report", "View Hunt History", "Season Analytics"])
 
+# ====================== DASHBOARD ======================
+with tab1:
+    st.header("Dashboard")
+    st.write("Welcome back to DD Hunt Tracker!")
+
+    try:
+        response = supabase.table("hunts").select("*").order("date", desc=True).limit(5).execute()
+        if response.data:
+            st.subheader("Recent Hunts")
+            df = pd.DataFrame(response.data)
+            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
+            st.dataframe(df[["date", "location", "high_temp", "low_temp", "rainfall"]])
+        else:
+            st.info("No hunts logged yet.")
+    except Exception as e:
+        st.error(str(e))
+
+# ====================== SUBMIT DAILY REPORT ======================
 with tab2:
     st.header("Submit Daily Hunt Report")
 
@@ -114,7 +132,7 @@ with tab2:
             st.session_state.auto_low = weather["low_temp"]
             st.session_state.auto_rainfall = float(weather["rainfall"])
             st.session_state.auto_wind = weather["wind"]
-            st.success(f"Weather loaded for {hunt_date}")
+            st.success(f"Weather loaded for {hunt_date.strftime('%b %d, %Y')}")
         else:
             st.warning("Could not load weather for this date.")
 
@@ -124,15 +142,12 @@ with tab2:
         high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 50))
         low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 35))
         river_level = st.text_input("River Level")
-        rainfall = st.number_input(
-            "Rainfall (inches)", 
-            value=float(st.session_state.get("auto_rainfall", 0.0)), 
-            step=0.1
-        )
+        rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1)
 
         hunters = st.text_area("Hunters (one per line)")
 
         st.subheader("Species Harvested")
+
         col1, col2 = st.columns(2)
         with col1:
             mallard = st.number_input("Mallard", value=0)
@@ -147,6 +162,10 @@ with tab2:
             redhead = st.number_input("Redhead", value=0)
             divers = st.number_input("Divers", value=0)
             geese = st.number_input("Geese", value=0)
+
+        # Total Ducks
+        total_ducks = mallard + gadwall + teal + pintail + wood_duck + widgeon + shoveler + canvasback + redhead + divers + geese
+        st.metric("Total Ducks", total_ducks)
 
         notes = st.text_area("Notes")
 
@@ -180,20 +199,21 @@ with tab2:
             supabase.table("hunts").insert(data).execute()
             st.success("Hunt submitted successfully!")
 
+# ====================== VIEW HUNT HISTORY ======================
 with tab3:
     st.header("View Hunt History")
     try:
         response = supabase.table("hunts").select("*").order("date", desc=True).execute()
         if response.data:
-            st.dataframe(pd.DataFrame(response.data))
+            df = pd.DataFrame(response.data)
+            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
+            st.dataframe(df)
         else:
             st.info("No hunts yet.")
     except Exception as e:
         st.error(str(e))
 
+# ====================== SEASON ANALYTICS ======================
 with tab4:
     st.header("Season Analytics")
-    st.write("Weekly totals coming soon...")
-
-if st.session_state.logged_in:
-    pass
+    st.write("Weekly totals and season rainfall tracking coming soon...")
