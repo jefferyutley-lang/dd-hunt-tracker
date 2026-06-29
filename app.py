@@ -5,6 +5,7 @@ from datetime import date
 import os
 import requests
 from io import BytesIO
+from fpdf import FPDF
 
 # ====================== SUPABASE ======================
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://fkkmjfzjhoigqwimmdcq.supabase.co")
@@ -25,9 +26,6 @@ def get_weather_data(hunt_date):
     today = date.today()
 
     try:
-        if hunt_date > today:
-            return None  # Can't get future weather
-
         if hunt_date == today:
             url = "https://api.open-meteo.com/v1/forecast"
             params = {"latitude": lat, "longitude": lon, "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"], "timezone": "America/Chicago", "forecast_days": 1}
@@ -75,6 +73,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ====================== MAIN APP ======================
+st.sidebar.image("dd_logo.png", width=160)
 st.sidebar.title("DD Hunt Tracker")
 st.sidebar.write(f"Logged in as: **{st.session_state.username}**")
 if st.sidebar.button("Logout"):
@@ -86,14 +85,11 @@ tab1, tab2, tab3, tab4 = st.tabs(["Dashboard", "Submit Daily Report", "View Hunt
 # ====================== DASHBOARD ======================
 with tab1:
     st.header("Dashboard")
-
     try:
         response = supabase.table("hunts").select("*").order("date", desc=True).limit(10).execute()
         if response.data:
             df = pd.DataFrame(response.data)
             df["Date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
-
-            # Highest species
             species_cols = ["mallard", "gadwall", "teal", "pintail", "wood_duck", "widgeon", "shoveler", "canvasback", "redhead", "divers", "geese"]
             df["Highest Species"] = df[species_cols].idxmax(axis=1).str.replace("_", " ").str.title() + " " + df[species_cols].max(axis=1).astype(str)
 
@@ -101,12 +97,6 @@ with tab1:
             display_df = df[["Date", "location", "Highest Species", "river_level"]].copy()
             display_df.columns = ["Date", "Location", "Highest Species", "River Level"]
             st.dataframe(display_df, use_container_width=True)
-
-            # Cumulative harvest line chart
-            st.subheader("Season Harvest Trend")
-            df_sorted = df.sort_values("date")
-            df_sorted["Cumulative"] = df_sorted[species_cols].sum(axis=1).cumsum()
-            st.line_chart(df_sorted.set_index("Date")["Cumulative"])
         else:
             st.info("No hunts logged yet.")
     except Exception as e:
@@ -143,10 +133,7 @@ with tab2:
 
         hunters = st.text_area("Hunters (one per line)")
 
-        # Species + Live Total
         st.subheader("Species Harvested")
-        total_ducks = 0
-
         col1, col2 = st.columns(2)
         with col1:
             mallard = st.number_input("Mallard", value=0)
@@ -197,21 +184,75 @@ with tab2:
             supabase.table("hunts").insert(data).execute()
             st.success("Hunt submitted successfully!")
 
-# ====================== VIEW HUNT HISTORY ======================
+# ====================== VIEW HUNT HISTORY + EDIT/DELETE ======================
 with tab3:
     st.header("View Hunt History")
+
     try:
         response = supabase.table("hunts").select("*").order("date", desc=True).execute()
         if response.data:
             df = pd.DataFrame(response.data)
             df["Date"] = pd.to_datetime(df["date"]).dt.strftime("%b %d, %Y")
             st.dataframe(df, use_container_width=True)
+
+            st.subheader("Edit or Delete a Hunt")
+            hunt_ids = [str(row["id"]) for row in response.data]
+            selected_id = st.selectbox("Select Hunt ID", hunt_ids)
+
+            if selected_id:
+                selected_hunt = next((h for h in response.data if str(h["id"]) == selected_id), None)
+                if selected_hunt:
+                    with st.form("edit_form"):
+                        new_location = st.text_input("Location / Blind", value=selected_hunt.get("location", ""))
+                        new_notes = st.text_area("Notes", value=selected_hunt.get("notes", ""))
+                        if st.form_submit_button("Update Hunt"):
+                            supabase.table("hunts").update({"location": new_location, "notes": new_notes}).eq("id", int(selected_id)).execute()
+                            st.success("Hunt updated!")
+                            st.rerun()
+
+                    if st.button("Delete This Hunt"):
+                        supabase.table("hunts").delete().eq("id", int(selected_id)).execute()
+                        st.warning("Hunt deleted.")
+                        st.rerun()
         else:
             st.info("No hunts yet.")
     except Exception as e:
         st.error(str(e))
 
-# ====================== SEASON ANALYTICS ======================
+    # ====================== EXPORT BUTTONS ======================
+    st.subheader("Export Data")
+
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("Export to Excel"):
+            if response.data:
+                df = pd.DataFrame(response.data)
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    df.to_excel(writer, index=False, sheet_name="Hunts")
+                st.download_button("Download Excel File", data=output.getvalue(), file_name="DD_Hunt_Data.xlsx")
+
+    with colB:
+        if st.button("Export to PDF"):
+            if response.data:
+                pdf = FPDF()
+                pdf.add_page()
+                pdf.set_font("Arial", size=14)
+                pdf.cell(0, 10, "DD Hunt Tracker - Hunt History", ln=True, align="C")
+                pdf.ln(5)
+                pdf.set_font("Arial", size=10)
+
+                for row in response.data:
+                    total = (row.get("mallard", 0) + row.get("gadwall", 0) + row.get("teal", 0) +
+                             row.get("pintail", 0) + row.get("wood_duck", 0) + row.get("widgeon", 0) +
+                             row.get("shoveler", 0) + row.get("canvasback", 0) + row.get("redhead", 0) +
+                             row.get("divers", 0) + row.get("geese", 0))
+                    line = f"{row['date']} | {row.get('location', 'N/A')} | Total Ducks: {total}"
+                    pdf.cell(0, 8, line, ln=True)
+
+                pdf_output = pdf.output(dest="S").encode("latin-1")
+                st.download_button("Download PDF Report", data=pdf_output, file_name="DD_Hunt_Report.pdf")
+
 with tab4:
     st.header("Season Analytics")
     st.write("Weekly totals and season rainfall tracking coming soon...")
