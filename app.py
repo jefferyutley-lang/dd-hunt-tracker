@@ -134,7 +134,7 @@ with tab2:
 
         hunters = st.text_area("Hunters (one per line)")
 
-            st.subheader("Species Harvested")
+        st.subheader("Species Harvested")
         col1, col2 = st.columns(2)
         with col1:
             mallard = st.number_input("Mallard", value=0)
