@@ -134,7 +134,8 @@ with tab2:
 
         hunters = st.text_area("Hunters (one per line)")
 
-st.subheader("Species Harvested")
+        # === SPECIES HARVESTED WITH LIVE TOTAL ===
+        st.subheader("Species Harvested")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -151,12 +152,12 @@ st.subheader("Species Harvested")
             divers = st.number_input("Divers", value=0)
             geese = st.number_input("Geese", value=0)
 
-        # Live Total Ducks - placed right under the header
+        # Live Total Ducks - right under the header
         total_ducks = mallard + gadwall + teal + pintail + wood_duck + widgeon + shoveler + canvasback + redhead + divers + geese
         st.metric("**Total Ducks**", total_ducks)
 
         notes = st.text_area("Notes")
-        
+
         if st.form_submit_button("Submit Hunt"):
             data = {
                 "date": str(hunt_date), "location": location, "wind": wind,
