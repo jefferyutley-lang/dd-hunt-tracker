@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 import os
 import requests
 import logging
+import altair as alt   # new import for analytics charts
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -73,17 +74,35 @@ def get_weather_data(hunt_date):
         response.raise_for_status()
         data = response.json()
         daily = data.get("daily", {})
+
+        # Safely extract numeric values (APIs sometimes return strings)
+        def first_as_float(container, default=0.0):
+            try:
+                val = container[0]
+                return float(val) if val is not None else float(default)
+            except Exception:
+                return float(default)
         
-        high = int(round(daily.get("temperature_2m_max", [55])[0] or 55))
-        low = int(round(daily.get("temperature_2m_min", [40])[0] or 40))
-        rain = float(round(daily.get("precipitation_sum", [0])[0] or 0, 2))
-        wind_speed = int(round(daily.get("wind_speed_10m_max", [0])[0] or 0))
-        wind_dir = daily.get("wind_direction_10m_dominant", [0])[0] or 0
+        high_raw = daily.get("temperature_2m_max", [55])
+        low_raw = daily.get("temperature_2m_min", [40])
+        wind_speed_raw = daily.get("wind_speed_10m_max", [0])
+        wind_dir_raw = daily.get("wind_direction_10m_dominant", [0])
+        precip_mm_raw = daily.get("precipitation_sum", [0])
+
+        high = int(round(first_as_float(high_raw, 55) or 55))
+        low = int(round(first_as_float(low_raw, 40) or 40))
+
+        # Open-Meteo returns precipitation_sum in millimeters (mm). Convert to inches.
+        rain_mm = first_as_float(precip_mm_raw, 0)
+        rain_in = float(round(rain_mm / 25.4, 2))
+        
+        wind_speed = int(round(first_as_float(wind_speed_raw, 0) or 0))
+        wind_dir = int(round(first_as_float(wind_dir_raw, 0) or 0))
         
         directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
         wind_text = f"{wind_speed} mph {directions[int((wind_dir % 360) / 22.5) % 16]}"
         
-        return {"high_temp": high, "low_temp": low, "rainfall": rain, "wind": wind_text}
+        return {"high_temp": high, "low_temp": low, "rainfall": rain_in, "wind": wind_text}
     except requests.RequestException as e:
         logger.warning(f"Weather API error: {str(e)}")
         return {"high_temp": 55, "low_temp": 40, "rainfall": 0.0, "wind": "N/A"}
@@ -261,7 +280,13 @@ with tab2:
         if river_level != "N/A":
             st.success(f"💧 River level loaded: {river_level}")
 
-    # Initialize species counts
+    # If we just submitted on the prior run, reset species_* session keys now (before widget creation)
+    if st.session_state.get("just_submitted", False):
+        for species in SPECIES:
+            st.session_state[f"species_{species}"] = 0
+        st.session_state["just_submitted"] = False
+
+    # Initialize species counts if missing
     for species in SPECIES:
         if f"species_{species}" not in st.session_state:
             st.session_state[f"species_{species}"] = 0
@@ -336,9 +361,9 @@ with tab2:
                 supabase.table("hunts").insert(data).execute()
                 st.success("✅ Hunt submitted successfully!")
                
-                # Reset species counts
-                for s in SPECIES:
-                    st.session_state[f"species_{s}"] = 0
+                # mark that we just submitted so we can reset species values
+                # on the next run BEFORE widgets are created (avoids Streamlit runtime error)
+                st.session_state["just_submitted"] = True
                
                 st.rerun()
                
@@ -508,41 +533,63 @@ with tab4:
             
             st.divider()
             
-            # ===== WEATHER CORRELATION =====
+            # ===== WEATHER CORRELATION WITH DATE RANGE =====
             st.subheader("🌡️ Weather Insights")
+            min_date = df["date"].min().date()
+            max_date = df["date"].max().date()
+            col_range1, col_range2 = st.columns([2, 1])
+            with col_range1:
+                analytics_range = st.date_input(
+                    "Analytics date range",
+                    value=(min_date, max_date),
+                    help="Select a date range for the rainfall and weekly species chart"
+                )
+            # compute and display rainfall for selected range
+            if isinstance(analytics_range, tuple) and len(analytics_range) == 2:
+                start_date, end_date = analytics_range
+            else:
+                start_date, end_date = min_date, max_date
+
+            mask = (df["date"].dt.date >= start_date) & (df["date"].dt.date <= end_date)
+            df_range = df.loc[mask].copy()
+
             col1, col2, col3 = st.columns(3)
-            
             with col1:
-                avg_high = df["high_temp"].mean()
-                st.metric("Avg High Temp", f"{int(avg_high)}°F")
-            
+                avg_high = df_range["high_temp"].mean() if len(df_range) > 0 else None
+                st.metric("Avg High Temp", f"{int(avg_high)}°F" if avg_high is not None else "N/A")
             with col2:
-                avg_low = df["low_temp"].mean()
-                st.metric("Avg Low Temp", f"{int(avg_low)}°F")
-            
+                avg_low = df_range["low_temp"].mean() if len(df_range) > 0 else None
+                st.metric("Avg Low Temp", f"{int(avg_low)}°F" if avg_low is not None else "N/A")
             with col3:
-                total_rain = df["rainfall"].sum()
-                st.metric("Total Rainfall", f"{total_rain:.1f} in")
-            
+                total_rain = df_range["rainfall"].sum() if len(df_range) > 0 else 0.0
+                st.metric("Rainfall", f"{total_rain:.2f} in", help=f"Rainfall from {start_date} → {end_date}")
+
             st.divider()
-            
-            # ===== TOP SPECIES MONTHLY =====
-            st.subheader("📅 Top Species by Month")
-            df["Month"] = df["date"].dt.strftime("%B %Y")
-            
-            months = sorted(df["Month"].unique())
-            selected_month = st.selectbox("Select Month", months)
-            
-            if selected_month:
-                month_df = df[df["Month"] == selected_month]
-                species_monthly = month_df[SPECIES].sum().sort_values(ascending=False)
-                species_monthly.index = species_monthly.index.str.replace("_", " ").str.title()
-                species_monthly = species_monthly[species_monthly > 0]
-                
-                if len(species_monthly) > 0:
-                    st.bar_chart(species_monthly)
+
+            # ===== SPECIES WEEKLY =====
+            st.subheader("📅 Species Weekly (by week start)")
+            if len(df_range) > 0:
+                # make weekly buckets (week starting on the period start)
+                df_range["week_start"] = df_range["date"].dt.to_period("W").apply(lambda r: r.start_time)
+                # melt species columns into long form
+                species_long = df_range.melt(id_vars=["week_start"], value_vars=SPECIES, var_name="species", value_name="count")
+                species_long["species"] = species_long["species"].str.replace("_", " ").str.title()
+                weekly = species_long.groupby(["week_start", "species"])["count"].sum().reset_index()
+                # filter out zeros
+                weekly = weekly[weekly["count"] > 0]
+
+                if len(weekly) > 0:
+                    chart = alt.Chart(weekly).mark_bar().encode(
+                        x=alt.X('week_start:T', title='Week'),
+                        y=alt.Y('count:Q', title='Count'),
+                        color=alt.Color('species:N', title='Species'),
+                        tooltip=['week_start', 'species', 'count']
+                    ).properties(width='100%', height=350)
+                    st.altair_chart(chart, use_container_width=True)
                 else:
-                    st.info("No data for this month")
+                    st.info("No species data in this range")
+            else:
+                st.info("No data in selected range")
         
         else:
             st.info("ℹ️ No hunt data available yet. Submit some hunts to see analytics!")
