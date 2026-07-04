@@ -294,44 +294,52 @@ with tab2:
     with st.form("submit_hunt", clear_on_submit=True):
         col1, col2 = st.columns(2)
        
-        with col1:
-            location = st.text_input("Location / Blind", placeholder="e.g., North Blind, Grand Island")
-            wind = st.text_input("Wind", value=st.session_state.get("auto_wind", ""), placeholder="e.g., 10 mph N")
-            high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 55), min_value=-20, max_value=120)
-            low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40), min_value=-20, max_value=120)
+    with col1:
+        location = st.text_input("Location / Blind", placeholder="e.g., North Blind, Grand Island")
+        wind = st.text_input("Wind", value=st.session_state.get("auto_wind", ""), placeholder="e.g., 10 mph N")
+        high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 55), min_value=-20, max_value=120)
+        low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40), min_value=-20, max_value=120)
        
-        with col2:
-            river_level = st.text_input("River Level", value=st.session_state.get("auto_river_level", ""), placeholder="e.g., 2.5 ft")
-            rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1, min_value=0.0)
-            hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
-            notes = st.text_area("Notes", placeholder="Any additional observations...")
+    with col2:
+        river_level = st.text_input("River Level", value=st.session_state.get("auto_river_level", ""), placeholder="e.g., 2.5 ft")
+        rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1, min_value=0.0)
+        hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
+        notes = st.text_area("Notes", placeholder="Any additional observations...")
 
         st.subheader("Species Harvested")
        
         col1, col2, col3 = st.columns(3)
        
-        with col1:
-            st.number_input("Mallard", min_value=0, key="species_mallard")
-            st.number_input("Gadwall", min_value=0, key="species_gadwall")
-            st.number_input("Teal", min_value=0, key="species_teal")
-            st.number_input("Pintail", min_value=0, key="species_pintail")
+    with col1:
+        st.number_input("Mallard", min_value=0, key="species_mallard")
+        st.number_input("Gadwall", min_value=0, key="species_gadwall")
+        st.number_input("Teal", min_value=0, key="species_teal")
+        st.number_input("Pintail", min_value=0, key="species_pintail")
        
-        with col2:
-            st.number_input("Wood Duck", min_value=0, key="species_wood_duck")
-            st.number_input("Widgeon", min_value=0, key="species_widgeon")
-            st.number_input("Shoveler", min_value=0, key="species_shoveler")
-            st.number_input("Canvasback", min_value=0, key="species_canvasback")
+    with col2:
+        st.number_input("Wood Duck", min_value=0, key="species_wood_duck")
+        st.number_input("Widgeon", min_value=0, key="species_widgeon")
+        st.number_input("Shoveler", min_value=0, key="species_shoveler")
+        st.number_input("Canvasback", min_value=0, key="species_canvasback")
        
-        with col3:
-            st.number_input("Redhead", min_value=0, key="species_redhead")
-            st.number_input("Divers", min_value=0, key="species_divers")
-            st.number_input("Geese", min_value=0, key="species_geese")
+    with col3:
+        st.number_input("Redhead", min_value=0, key="species_redhead")
+        st.number_input("Divers", min_value=0, key="species_divers")
+        st.number_input("Geese", min_value=0, key="species_geese")
 
         st.divider()
-       
+
+        # Manual verification inputs (user-entered)
+        # Defaults are convenient: default total = sum of species in session_state, default species_count = # species > 0
+        default_total = sum(st.session_state.get(f"species_{s}", 0) for s in SPECIES)
+        default_species_count = sum(1 for s in SPECIES if st.session_state.get(f"species_{s}", 0) > 0)
+
+        total_entered = st.number_input("Total Ducks (enter total)", min_value=0, value=int(default_total), step=1, help="Enter the total number of ducks harvested (sum of species).")
+        species_count_entered = st.number_input("Species Count (number of species harvested)", min_value=0, value=int(default_species_count), step=1, help="Enter how many different species had a non-zero harvest.")
+
         submitted = st.form_submit_button("✅ Submit Hunt", use_container_width=True)
-   
-    # Real-time total (outside form)
+
+    # Real-time total display (outside form)
     st.divider()
     total_ducks = sum(st.session_state.get(f"species_{s}", 0) for s in SPECIES)
     st.metric("Total 🦆", total_ducks)
@@ -341,35 +349,48 @@ with tab2:
             st.error("❌ Location is required")
         else:
             try:
-                species_counts = {s: st.session_state.get(f"species_{s}", 0) for s in SPECIES}
-               
-                data = {
-                    "date": str(hunt_date),
-                    "location": location,
-                    "wind": wind,
-                    "high_temp": int(high_temp),
-                    "low_temp": int(low_temp),
-                    "river_level": river_level,
-                    "rainfall": float(rainfall),
-                    "hunters": hunters,
-                    "notes": notes,
-                    "season": "2025-2026",
-                    "created_by": st.session_state.username,
-                    **species_counts
-                }
-               
-                supabase.table("hunts").insert(data).execute()
-                st.success("✅ Hunt submitted successfully!")
-               
-                # mark that we just submitted so we can reset species values
-                # on the next run BEFORE widgets are created (avoids Streamlit runtime error)
-                st.session_state["just_submitted"] = True
-               
-                st.rerun()
-               
+                species_counts = {s: int(st.session_state.get(f"species_{s}", 0)) for s in SPECIES}
+
+                # Validation against user inputs
+                sum_species = sum(species_counts.values())
+                distinct_species = sum(1 for v in species_counts.values() if v > 0)
+
+                if int(total_entered) != sum_species or int(species_count_entered) != distinct_species:
+                    # Build helpful message
+                    msgs = []
+                    if int(total_entered) != sum_species:
+                        msgs.append(f"Total mismatch: you entered {int(total_entered)} but the sum of species is {sum_species}.")
+                    if int(species_count_entered) != distinct_species:
+                        msgs.append(f"Species count mismatch: you entered {int(species_count_entered)} but distinct species with >0 count is {distinct_species}.")
+                    st.error(" ❌ Submission blocked. " + " ".join(msgs))
+                else:
+                    # Data is valid — insert
+                    data = {
+                        "date": str(hunt_date),
+                        "location": location,
+                        "wind": wind,
+                        "high_temp": int(high_temp),
+                        "low_temp": int(low_temp),
+                        "river_level": river_level,
+                        "rainfall": float(rainfall),
+                        "hunters": hunters,
+                        "notes": notes,
+                        "season": "2025-2026",
+                        "created_by": st.session_state.username,
+                        **species_counts
+                    }
+
+                    supabase.table("hunts").insert(data).execute()
+                    st.success("✅ Hunt submitted successfully!")
+
+                    # mark that we just submitted so we can reset species values before widget creation next run
+                    st.session_state["just_submitted"] = True
+                    st.rerun()
+
             except Exception as e:
                 logger.error(f"Submit hunt error: {str(e)}")
                 st.error(f"❌ Error submitting hunt: {str(e)}")
+                
     
     # Display total ducks OUTSIDE the form for real-time updates
     st.divider()
