@@ -294,38 +294,38 @@ with tab2:
     with st.form("submit_hunt", clear_on_submit=True):
         col1, col2 = st.columns(2)
        
-    with col1:
-        location = st.text_input("Location / Blind", placeholder="e.g., North Blind, Grand Island")
-        wind = st.text_input("Wind", value=st.session_state.get("auto_wind", ""), placeholder="e.g., 10 mph N")
-        high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 55), min_value=-20, max_value=120)
-        low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40), min_value=-20, max_value=120)
+        with col1:
+            location = st.text_input("Location / Blind", placeholder="e.g., North Blind, Grand Island")
+            wind = st.text_input("Wind", value=st.session_state.get("auto_wind", ""), placeholder="e.g., 10 mph N")
+            high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 55), min_value=-20, max_value=120)
+            low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40), min_value=-20, max_value=120)
        
-    with col2:
-        river_level = st.text_input("River Level", value=st.session_state.get("auto_river_level", ""), placeholder="e.g., 2.5 ft")
-        rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1, min_value=0.0)
-        hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
-        notes = st.text_area("Notes", placeholder="Any additional observations...")
+        with col2:
+            river_level = st.text_input("River Level", value=st.session_state.get("auto_river_level", ""), placeholder="e.g., 2.5 ft")
+            rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1, min_value=0.0)
+            hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
+            notes = st.text_area("Notes", placeholder="Any additional observations...")
 
         st.subheader("Species Harvested")
        
         col1, col2, col3 = st.columns(3)
        
-    with col1:
-        st.number_input("Mallard", min_value=0, key="species_mallard")
-        st.number_input("Gadwall", min_value=0, key="species_gadwall")
-        st.number_input("Teal", min_value=0, key="species_teal")
-        st.number_input("Pintail", min_value=0, key="species_pintail")
+        with col1:
+            st.number_input("Mallard", min_value=0, key="species_mallard")
+            st.number_input("Gadwall", min_value=0, key="species_gadwall")
+            st.number_input("Teal", min_value=0, key="species_teal")
+            st.number_input("Pintail", min_value=0, key="species_pintail")
        
-    with col2:
-        st.number_input("Wood Duck", min_value=0, key="species_wood_duck")
-        st.number_input("Widgeon", min_value=0, key="species_widgeon")
-        st.number_input("Shoveler", min_value=0, key="species_shoveler")
-        st.number_input("Canvasback", min_value=0, key="species_canvasback")
+        with col2:
+            st.number_input("Wood Duck", min_value=0, key="species_wood_duck")
+            st.number_input("Widgeon", min_value=0, key="species_widgeon")
+            st.number_input("Shoveler", min_value=0, key="species_shoveler")
+            st.number_input("Canvasback", min_value=0, key="species_canvasback")
        
-    with col3:
-        st.number_input("Redhead", min_value=0, key="species_redhead")
-        st.number_input("Divers", min_value=0, key="species_divers")
-        st.number_input("Geese", min_value=0, key="species_geese")
+        with col3:
+            st.number_input("Redhead", min_value=0, key="species_redhead")
+            st.number_input("Divers", min_value=0, key="species_divers")
+            st.number_input("Geese", min_value=0, key="species_geese")
 
         st.divider()
 
@@ -595,7 +595,9 @@ with tab4:
                 # melt species columns into long form
                 species_long = df_range.melt(id_vars=["week_start"], value_vars=SPECIES, var_name="species", value_name="count")
                 species_long["species"] = species_long["species"].str.replace("_", " ").str.title()
-                weekly = species_long.groupby(["week_start", "species"])["count"].sum().reset_index()
+                weekly = species_long.groupby(["week_start", "species"])['count'].sum().reset_index()
+                # ensure numeric, avoid strings like '100%'
+                weekly['count'] = pd.to_numeric(weekly['count'], errors='coerce').fillna(0).astype(int)
                 # filter out zeros
                 weekly = weekly[weekly["count"] > 0]
 
