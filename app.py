@@ -335,14 +335,6 @@ with tab2:
 
         st.divider()
 
-        # Manual verification inputs (user-entered)
-        # Defaults are convenient: default total = sum of species in session_state, default species_count = # species > 0
-        default_total = sum(st.session_state.get(f"species_{s}", 0) for s in SPECIES)
-        default_species_count = sum(1 for s in SPECIES if st.session_state.get(f"species_{s}", 0) > 0)
-
-        total_entered = st.number_input("Total Ducks (enter total)", min_value=0, value=int(default_total), step=1, help="Enter the total number of ducks harvested (sum of species).")
-        species_count_entered = st.number_input("Species Count (number of species harvested)", min_value=0, value=int(default_species_count), step=1, help="Enter how many different species had a count > 0.")
-
         submitted = st.form_submit_button("✅ Submit Hunt", use_container_width=True)
 
     if submitted:
@@ -352,41 +344,28 @@ with tab2:
             try:
                 species_counts = {s: int(st.session_state.get(f"species_{s}", 0)) for s in SPECIES}
 
-                # Validation against user inputs
-                sum_species = sum(species_counts.values())
-                distinct_species = sum(1 for v in species_counts.values() if v > 0)
+                # Data is valid — insert
+                data = {
+                    "date": str(hunt_date),
+                    "location": location,
+                    "wind": wind,
+                    "high_temp": int(high_temp),
+                    "low_temp": int(low_temp),
+                    "river_level": river_level,
+                    "rainfall": float(rainfall),
+                    "hunters": hunters,
+                    "notes": notes,
+                    "season": "2025-2026",
+                    "created_by": st.session_state.username,
+                    **species_counts
+                }
 
-                if int(total_entered) != sum_species or int(species_count_entered) != distinct_species:
-                    # Build helpful message
-                    msgs = []
-                    if int(total_entered) != sum_species:
-                        msgs.append(f"Total mismatch: you entered {int(total_entered)} but the sum of species is {sum_species}.")
-                    if int(species_count_entered) != distinct_species:
-                        msgs.append(f"Species count mismatch: you entered {int(species_count_entered)} but distinct species with >0 count is {distinct_species}.")
-                    st.error(" ❌ Submission blocked. " + " ".join(msgs))
-                else:
-                    # Data is valid — insert
-                    data = {
-                        "date": str(hunt_date),
-                        "location": location,
-                        "wind": wind,
-                        "high_temp": int(high_temp),
-                        "low_temp": int(low_temp),
-                        "river_level": river_level,
-                        "rainfall": float(rainfall),
-                        "hunters": hunters,
-                        "notes": notes,
-                        "season": "2025-2026",
-                        "created_by": st.session_state.username,
-                        **species_counts
-                    }
+                supabase.table("hunts").insert(data).execute()
+                st.success("✅ Hunt submitted successfully!")
 
-                    supabase.table("hunts").insert(data).execute()
-                    st.success("✅ Hunt submitted successfully!")
-
-                    # mark that we just submitted so we can reset species values before widget creation next run
-                    st.session_state["just_submitted"] = True
-                    st.rerun()
+                # mark that we just submitted so we can reset species values before widget creation next run
+                st.session_state["just_submitted"] = True
+                st.rerun()
 
             except Exception as e:
                 logger.error(f"Submit hunt error: {str(e)}")
@@ -574,8 +553,11 @@ with tab4:
                 # melt species columns into long form
                 species_long = df_range.melt(id_vars=["week_start"], value_vars=SPECIES, var_name="species", value_name="count")
                 species_long["species"] = species_long["species"].str.replace("_", " ").str.title()
+                # Convert count to numeric and ensure integer type
                 species_long["count"] = pd.to_numeric(species_long["count"], errors='coerce').fillna(0).astype(int)
                 weekly = species_long.groupby(["week_start", "species"])['count'].sum().reset_index()
+                # Ensure count is integer for Altair
+                weekly["count"] = weekly["count"].astype(int)
                 # filter out zeros
                 weekly = weekly[weekly["count"] > 0]
 
@@ -584,7 +566,7 @@ with tab4:
                         x=alt.X('week_start:T', title='Week'),
                         y=alt.Y('count:Q', title='Count'),
                         color=alt.Color('species:N', title='Species'),
-                        tooltip=['week_start', 'species', 'count']
+                        tooltip=['week_start', 'species', 'count:Q']
                     ).properties(width='100%', height=350)
                     st.altair_chart(chart, use_container_width=True)
                 else:
