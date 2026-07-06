@@ -306,7 +306,13 @@ with tab2:
             hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
             notes = st.text_area("Notes", placeholder="Any additional observations...")
 
-        st.subheader("Species Harvested")
+        # Calculate total for display in header
+        total_ducks = sum(st.session_state.get(f"species_{s}", 0) for s in SPECIES)
+        col_title, col_total = st.columns([0.7, 0.3])
+        with col_title:
+            st.subheader("Species Harvested")
+        with col_total:
+            st.metric("Total 🦆", total_ducks)
        
         col1, col2, col3 = st.columns(3)
        
@@ -335,14 +341,9 @@ with tab2:
         default_species_count = sum(1 for s in SPECIES if st.session_state.get(f"species_{s}", 0) > 0)
 
         total_entered = st.number_input("Total Ducks (enter total)", min_value=0, value=int(default_total), step=1, help="Enter the total number of ducks harvested (sum of species).")
-        species_count_entered = st.number_input("Species Count (number of species harvested)", min_value=0, value=int(default_species_count), step=1, help="Enter how many different species had a non-zero harvest.")
+        species_count_entered = st.number_input("Species Count (number of species harvested)", min_value=0, value=int(default_species_count), step=1, help="Enter how many different species had a count > 0.")
 
         submitted = st.form_submit_button("✅ Submit Hunt", use_container_width=True)
-
-    # Real-time total display (outside form)
-    st.divider()
-    total_ducks = sum(st.session_state.get(f"species_{s}", 0) for s in SPECIES)
-    st.metric("Total 🦆", total_ducks)
 
     if submitted:
         if not location:
@@ -390,28 +391,6 @@ with tab2:
             except Exception as e:
                 logger.error(f"Submit hunt error: {str(e)}")
                 st.error(f"❌ Error submitting hunt: {str(e)}")
-                
-    
-    # Display total ducks OUTSIDE the form for real-time updates
-    st.divider()
-    col_title, col_total = st.columns([0.7, 0.3])
-    with col_title:
-        st.write("")  # Spacer
-    with col_total:
-        total_ducks = sum([
-            st.session_state.get("species_mallard", 0),
-            st.session_state.get("species_gadwall", 0),
-            st.session_state.get("species_teal", 0),
-            st.session_state.get("species_pintail", 0),
-            st.session_state.get("species_wood_duck", 0),
-            st.session_state.get("species_widgeon", 0),
-            st.session_state.get("species_shoveler", 0),
-            st.session_state.get("species_canvasback", 0),
-            st.session_state.get("species_redhead", 0),
-            st.session_state.get("species_divers", 0),
-            st.session_state.get("species_geese", 0),
-        ])
-        st.metric("Total 🦆", total_ducks)
 
 # ==================== TAB 3: HUNT HISTORY ====================
 with tab3:
@@ -595,9 +574,8 @@ with tab4:
                 # melt species columns into long form
                 species_long = df_range.melt(id_vars=["week_start"], value_vars=SPECIES, var_name="species", value_name="count")
                 species_long["species"] = species_long["species"].str.replace("_", " ").str.title()
+                species_long["count"] = pd.to_numeric(species_long["count"], errors='coerce').fillna(0).astype(int)
                 weekly = species_long.groupby(["week_start", "species"])['count'].sum().reset_index()
-                # ensure numeric, avoid strings like '100%'
-                weekly['count'] = pd.to_numeric(weekly['count'], errors='coerce').fillna(0).astype(int)
                 # filter out zeros
                 weekly = weekly[weekly["count"] > 0]
 
