@@ -291,50 +291,64 @@ with tab2:
         if f"species_{species}" not in st.session_state:
             st.session_state[f"species_{species}"] = 0
 
-    with st.form("submit_hunt", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-       
-        with col1:
-            location = st.text_input("Location / Blind", placeholder="e.g., North Blind, Grand Island")
-            wind = st.text_input("Wind", value=st.session_state.get("auto_wind", ""), placeholder="e.g., 10 mph N")
-            high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 55), min_value=-20, max_value=120)
-            low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40), min_value=-20, max_value=120)
-       
-        with col2:
-            river_level = st.text_input("River Level", value=st.session_state.get("auto_river_level", ""), placeholder="e.g., 2.5 ft")
-            rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1, min_value=0.0)
-            hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines")
-            notes = st.text_area("Notes", placeholder="Any additional observations...")
+    # ===== SECTION 1: BASIC INFO (OUTSIDE FORM - updates live) =====
+    st.subheader("Hunt Details")
+    col1, col2 = st.columns(2)
+   
+    with col1:
+        location = st.text_input("Location / Blind", placeholder="e.g., North Blind, Grand Island", key="form_location")
+        wind = st.text_input("Wind", value=st.session_state.get("auto_wind", ""), placeholder="e.g., 10 mph N", key="form_wind")
+        high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 55), min_value=-20, max_value=120, key="form_high_temp")
+        low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40), min_value=-20, max_value=120, key="form_low_temp")
+   
+    with col2:
+        river_level = st.text_input("River Level", value=st.session_state.get("auto_river_level", ""), placeholder="e.g., 2.5 ft", key="form_river_level")
+        rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1, min_value=0.0, key="form_rainfall")
+        hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines", key="form_hunters")
+        notes = st.text_area("Notes", placeholder="Any additional observations...", key="form_notes")
 
-        # Calculate total for display in header
-        total_ducks = sum(st.session_state.get(f"species_{s}", 0) for s in SPECIES)
-        col_title, col_total = st.columns([0.7, 0.3])
-        with col_title:
-            st.subheader("Species Harvested")
-        with col_total:
-            st.metric("Total 🦆", total_ducks)
-       
-        col1, col2, col3 = st.columns(3)
-       
-        with col1:
-            st.number_input("Mallard", min_value=0, key="species_mallard")
-            st.number_input("Gadwall", min_value=0, key="species_gadwall")
-            st.number_input("Teal", min_value=0, key="species_teal")
-            st.number_input("Pintail", min_value=0, key="species_pintail")
-       
-        with col2:
-            st.number_input("Wood Duck", min_value=0, key="species_wood_duck")
-            st.number_input("Widgeon", min_value=0, key="species_widgeon")
-            st.number_input("Shoveler", min_value=0, key="species_shoveler")
-            st.number_input("Canvasback", min_value=0, key="species_canvasback")
-       
-        with col3:
-            st.number_input("Redhead", min_value=0, key="species_redhead")
-            st.number_input("Divers", min_value=0, key="species_divers")
-            st.number_input("Geese", min_value=0, key="species_geese")
+    st.divider()
 
-        st.divider()
+    # ===== SECTION 2: SPECIES INPUT & LIVE TOTAL (OUTSIDE FORM - updates live) =====
+    st.subheader("Species Harvested")
+   
+    col1, col2, col3 = st.columns(3)
+   
+    with col1:
+        st.number_input("Mallard", min_value=0, key="species_mallard")
+        st.number_input("Gadwall", min_value=0, key="species_gadwall")
+        st.number_input("Teal", min_value=0, key="species_teal")
+        st.number_input("Pintail", min_value=0, key="species_pintail")
+   
+    with col2:
+        st.number_input("Wood Duck", min_value=0, key="species_wood_duck")
+        st.number_input("Widgeon", min_value=0, key="species_widgeon")
+        st.number_input("Shoveler", min_value=0, key="species_shoveler")
+        st.number_input("Canvasback", min_value=0, key="species_canvasback")
+   
+    with col3:
+        st.number_input("Redhead", min_value=0, key="species_redhead")
+        st.number_input("Divers", min_value=0, key="species_divers")
+        st.number_input("Geese", min_value=0, key="species_geese")
 
+    # === LIVE TOTAL (updates on every keystroke) ===
+    st.divider()
+    total_ducks = sum(st.session_state.get(f"species_{s}", 0) for s in SPECIES)
+    col_title, col_metric = st.columns([3, 1])
+    with col_title:
+        st.write("")  # Spacer
+    with col_metric:
+        st.metric("Total 🦆", int(total_ducks))
+
+    st.divider()
+
+    # ===== SECTION 3: CONFIRMATION & SUBMIT (IN FORM) =====
+    st.subheader("Review & Confirm")
+    
+    with st.form("submit_hunt_confirmation"):
+        # Show summary of what will be submitted
+        st.info(f"📋 **Submission Summary:**\n- **Date:** {hunt_date.strftime('%b %d, %Y')}\n- **Location:** {location or '(not set)'}\n- **Total Ducks:** {total_ducks}\n- **Species Count:** {sum(1 for s in SPECIES if st.session_state.get(f'species_{s}', 0) > 0)}")
+        
         submitted = st.form_submit_button("✅ Submit Hunt", use_container_width=True)
 
     if submitted:
@@ -545,30 +559,38 @@ with tab4:
 
             st.divider()
 
-            # ===== SPECIES WEEKLY =====
+            # ===== SPECIES WEEKLY - SIMPLE TABLE (WORKING) =====
             st.subheader("📅 Species Weekly (by week start)")
             if len(df_range) > 0:
-                # make weekly buckets (week starting on the period start)
-                df_range["week_start"] = df_range["date"].dt.to_period("W").apply(lambda r: r.start_time)
-                # melt species columns into long form
-                species_long = df_range.melt(id_vars=["week_start"], value_vars=SPECIES, var_name="species", value_name="count")
-                species_long["species"] = species_long["species"].str.replace("_", " ").str.title()
-                # Convert count to numeric and ensure integer type
-                species_long["count"] = pd.to_numeric(species_long["count"], errors='coerce').fillna(0).astype(int)
-                weekly = species_long.groupby(["week_start", "species"])['count'].sum().reset_index()
-                # Ensure count is integer for Altair
-                weekly["count"] = weekly["count"].astype(int)
-                # filter out zeros
-                weekly = weekly[weekly["count"] > 0]
-
-                if len(weekly) > 0:
-                    chart = alt.Chart(weekly).mark_bar().encode(
-                        x=alt.X('week_start:T', title='Week'),
-                        y=alt.Y('count:Q', title='Count'),
-                        color=alt.Color('species:N', title='Species'),
-                        tooltip=['week_start', 'species', 'count:Q']
-                    ).properties(width='100%', height=350)
-                    st.altair_chart(chart, use_container_width=True)
+                # Add week column to df_range
+                df_range_copy = df_range.copy()
+                df_range_copy["week_start"] = df_range_copy["date"].dt.to_period("W").dt.start_time
+                
+                # Create a list to hold weekly data
+                weekly_data = []
+                
+                # Iterate through each week
+                for week in sorted(df_range_copy["week_start"].unique()):
+                    week_df = df_range_copy[df_range_copy["week_start"] == week]
+                    week_row = {"Week": week.strftime("%b %d, %Y")}
+                    
+                    # Sum each species for this week
+                    for species in SPECIES:
+                        week_row[species.replace("_", " ").title()] = int(week_df[species].sum())
+                    
+                    weekly_data.append(week_row)
+                
+                if weekly_data:
+                    weekly_df = pd.DataFrame(weekly_data)
+                    st.dataframe(weekly_df, use_container_width=True, hide_index=True)
+                    
+                    # Also show a simple bar chart by species totals per week
+                    st.subheader("Weekly Species Totals (Stacked)")
+                    weekly_df_display = weekly_df.set_index("Week")
+                    # Only show species with data
+                    weekly_df_display = weekly_df_display.loc[:, (weekly_df_display != 0).any(axis=0)]
+                    if len(weekly_df_display.columns) > 0:
+                        st.bar_chart(weekly_df_display)
                 else:
                     st.info("No species data in this range")
             else:
