@@ -583,7 +583,7 @@ with tab4:
                 for week_start in sorted(df_range_copy["week_start"].unique()):
                     week_df = df_range_copy[df_range_copy["week_start"] == week_start]
                     week_label = week_start.strftime("%b %d")
-                    row = {"Week": week_label, "week_date": week_start}
+                    row = {"Week": week_label, "week_date": pd.Timestamp(week_start)}
                     for species in SPECIES:
                         row[species.replace("_", " ").title()] = int(week_df[species].sum())
                     pivot_data.append(row)
@@ -598,7 +598,7 @@ with tab4:
                     line_data = []
                     for idx, row in pivot_df.iterrows():
                         week = row["Week"]
-                        week_date = row["week_date"]
+                        week_date = pd.Timestamp(row["week_date"])
                         for species in SPECIES:
                             species_name = species.replace("_", " ").title()
                             if species_name in row:
@@ -608,11 +608,13 @@ with tab4:
                                         "Week": week,
                                         "week_date": week_date,
                                         "Species": species_name,
-                                        "Count": count
+                                        "Count": int(count)
                                     })
                     
                     if line_data:
                         line_df = pd.DataFrame(line_data)
+                        # Ensure week_date is datetime type
+                        line_df["week_date"] = pd.to_datetime(line_df["week_date"])
                         
                         # Create line chart with Altair using temporal date encoding for proper ordering
                         chart = alt.Chart(line_df).mark_line(point=True).encode(
@@ -626,6 +628,8 @@ with tab4:
                         ).interactive()
                         
                         st.altair_chart(chart, use_container_width=True)
+                    else:
+                        st.info("No species with harvest in this range")
                     
                     # === PIVOT TABLE ===
                     st.subheader("📊 Weekly Harvest Data (Pivot Table)")
