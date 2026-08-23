@@ -502,8 +502,19 @@ with tab4:
             
             with col2:
                 st.subheader("📈 Hunts Over Time")
-                hunts_per_day = df.groupby(df["date"].dt.date).size()
-                st.line_chart(hunts_per_day)
+                # FIX: Sort by date and prepare data for ordered display
+                hunts_per_day = df.groupby(df["date"].dt.date).size().sort_index()
+                hunts_df = hunts_per_day.reset_index()
+                hunts_df.columns = ["Date", "Hunts"]
+                hunts_df["Date"] = pd.to_datetime(hunts_df["Date"])
+                
+                # Use Altair to maintain date order
+                chart = alt.Chart(hunts_df).mark_line(point=True).encode(
+                    x=alt.X("Date:T", title="Date"),
+                    y=alt.Y("Hunts:Q", title="Number of Hunts"),
+                    tooltip=["Date:T", "Hunts:Q"]
+                ).properties(width=500, height=300)
+                st.altair_chart(chart, use_container_width=True)
             
             st.divider()
             
@@ -572,7 +583,7 @@ with tab4:
                 for week_start in sorted(df_range_copy["week_start"].unique()):
                     week_df = df_range_copy[df_range_copy["week_start"] == week_start]
                     week_label = week_start.strftime("%b %d")
-                    row = {"Week": week_label}
+                    row = {"Week": week_label, "week_date": week_start}
                     for species in SPECIES:
                         row[species.replace("_", " ").title()] = int(week_df[species].sum())
                     pivot_data.append(row)
@@ -583,10 +594,11 @@ with tab4:
                     # === LINE CHART ===
                     st.subheader("📈 Species Trends Over Weeks")
                     
-                    # Convert to long format for line chart
+                    # Convert to long format for line chart with proper date ordering
                     line_data = []
                     for idx, row in pivot_df.iterrows():
                         week = row["Week"]
+                        week_date = row["week_date"]
                         for species in SPECIES:
                             species_name = species.replace("_", " ").title()
                             if species_name in row:
@@ -594,6 +606,7 @@ with tab4:
                                 if count > 0:  # Only include species with harvest
                                     line_data.append({
                                         "Week": week,
+                                        "week_date": week_date,
                                         "Species": species_name,
                                         "Count": count
                                     })
@@ -601,9 +614,9 @@ with tab4:
                     if line_data:
                         line_df = pd.DataFrame(line_data)
                         
-                        # Create line chart with Altair
+                        # Create line chart with Altair using temporal date encoding for proper ordering
                         chart = alt.Chart(line_df).mark_line(point=True).encode(
-                            x=alt.X("Week:N", title="Week", axis=alt.Axis(labelAngle=45)),
+                            x=alt.X("week_date:T", title="Week", axis=alt.Axis(labelAngle=45, format="%b %d")),
                             y=alt.Y("Count:Q", title="Harvest Count"),
                             color=alt.Color("Species:N", title="Species", scale=alt.Scale(scheme="category10")),
                             tooltip=["Week:N", "Species:N", "Count:Q"]
@@ -617,10 +630,13 @@ with tab4:
                     # === PIVOT TABLE ===
                     st.subheader("📊 Weekly Harvest Data (Pivot Table)")
                     
+                    # Display table with weeks in order (drop the helper column)
+                    display_pivot = pivot_df.drop(columns=["week_date"])
+                    
                     # Reorder columns: Week first, then species columns
                     species_cols = [s.replace("_", " ").title() for s in SPECIES]
-                    display_cols = ["Week"] + [col for col in species_cols if col in pivot_df.columns]
-                    pivot_display = pivot_df[display_cols]
+                    display_cols = ["Week"] + [col for col in species_cols if col in display_pivot.columns]
+                    pivot_display = display_pivot[display_cols]
                     
                     st.dataframe(pivot_display, use_container_width=True, hide_index=True)
                     
