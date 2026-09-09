@@ -752,6 +752,7 @@ def show_login():
                 "adam": {"pw": "adam123", "role": "admin"},
                 "justin": {"pw": "justin123", "role": "admin"},
                 "mcguire": {"pw": "mcguire123", "role": "admin"},
+                "caleb": {"pw": "caleb123", "role": "admin"},
                 "penick": {"pw": "penick123", "role": "admin"},
                 "river": {"pw": "river123", "role": "admin"},
             }
@@ -762,7 +763,7 @@ def show_login():
                 st.rerun()
             else:
                 st.error("Invalid login. Please use your assigned username and password.")
-    st.info("Club accounts: jeff, andrew, kyle, adam, justin, mcguire, penick, river (all full access)  •  Backup: admin/admin123 or viewer/viewer123")
+    st.info("Club accounts: jeff, andrew, kyle, adam, justin, mcguire, caleb, penick, river (all full access)  •  Backup: admin/admin123 or viewer/viewer123")
 
 
 # ---------------- MAIN APP ----------------
