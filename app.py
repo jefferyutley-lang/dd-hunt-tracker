@@ -820,8 +820,52 @@ def generate_pdf_report(period_label: str, df: pd.DataFrame, species_totals: dic
 
 
 
+def _wildlife_species_category(species: str) -> str:
+    """Map species name to Supabase wildlife_survey_sightings.category."""
+    sp = (species or "").strip()
+    if sp in ("Deer", "Turkey"):
+        return "big_game"
+    if sp in SPECIES:
+        return "waterfowl"
+    return "other"
+
+
 def add_wildlife_survey(survey_date: str, location: str, species_list: list[str], observers: str = "", notes: str = "", created_by: str = "") -> int:
     """Quick scouting log — store which species were seen, no counts."""
+    # Deduplicate while preserving order
+    seen = []
+    for sp in species_list:
+        sp = (sp or "").strip()
+        if sp and sp not in seen:
+            seen.append(sp)
+
+    if use_supabase():
+        client = get_supabase_client()
+        survey_payload = {
+            "observed_at": survey_date,
+            "location": location,
+            "observers": (observers or "").strip(),
+            "notes": (notes or "").strip(),
+            "created_by": created_by or "",
+            # observed_time / wind / weather omitted — UI does not collect them yet
+        }
+        resp = client.table("wildlife_surveys").insert(survey_payload).execute()
+        if not resp.data:
+            raise RuntimeError("Supabase wildlife survey insert returned no row")
+        survey_id = int(resp.data[0]["id"])
+        if seen:
+            sighting_rows = [
+                {
+                    "survey_id": survey_id,
+                    "category": _wildlife_species_category(sp),
+                    "species": sp,
+                    "count": 1,
+                }
+                for sp in seen
+            ]
+            client.table("wildlife_survey_sightings").insert(sighting_rows).execute()
+        return survey_id
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
@@ -830,21 +874,63 @@ def add_wildlife_survey(survey_date: str, location: str, species_list: list[str]
         (survey_date, location, observers.strip(), notes.strip(), created_by),
     )
     survey_id = c.lastrowid
-    seen = []
-    for sp in species_list:
-        sp = (sp or "").strip()
-        if sp and sp not in seen:
-            seen.append(sp)
-            c.execute(
-                "INSERT INTO wildlife_survey_sightings (survey_id, species) VALUES (?, ?)",
-                (survey_id, sp),
-            )
+    for sp in seen:
+        c.execute(
+            "INSERT INTO wildlife_survey_sightings (survey_id, species) VALUES (?, ?)",
+            (survey_id, sp),
+        )
     conn.commit()
     conn.close()
     return survey_id
 
 
 def get_all_wildlife_surveys_df() -> pd.DataFrame:
+    if use_supabase():
+        client = get_supabase_client()
+        # Embed sightings so we can build species_seen for the UI
+        resp = (
+            client.table("wildlife_surveys")
+            .select("id, observed_at, location, observers, notes, created_by, created_at, wildlife_survey_sightings(species)")
+            .order("observed_at", desc=True)
+            .order("id", desc=True)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return pd.DataFrame(
+                columns=[
+                    "id",
+                    "survey_date",
+                    "location",
+                    "observers",
+                    "notes",
+                    "created_by",
+                    "created_at",
+                    "species_seen",
+                ]
+            )
+        mapped = []
+        for r in rows:
+            sightings = r.get("wildlife_survey_sightings") or []
+            species_names = []
+            for s in sightings:
+                sp = (s.get("species") or "").strip() if isinstance(s, dict) else ""
+                if sp and sp not in species_names:
+                    species_names.append(sp)
+            mapped.append(
+                {
+                    "id": r.get("id"),
+                    "survey_date": r.get("observed_at"),
+                    "location": r.get("location"),
+                    "observers": r.get("observers"),
+                    "notes": r.get("notes"),
+                    "created_by": r.get("created_by"),
+                    "created_at": r.get("created_at"),
+                    "species_seen": ", ".join(species_names),
+                }
+            )
+        return pd.DataFrame(mapped)
+
     conn = get_db_connection()
     query = """
         SELECT
@@ -867,6 +953,18 @@ def get_all_wildlife_surveys_df() -> pd.DataFrame:
 
 
 def delete_wildlife_survey(survey_id: int):
+    if use_supabase():
+        client = get_supabase_client()
+        try:
+            # No ON DELETE CASCADE on FK — delete children first
+            client.table("wildlife_survey_sightings").delete().eq("survey_id", survey_id).execute()
+            client.table("wildlife_surveys").delete().eq("id", survey_id).execute()
+        except Exception as ex:
+            raise RuntimeError(
+                f"Supabase wildlife survey delete failed (RLS may block anon delete): {ex}"
+            ) from ex
+        return
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("DELETE FROM wildlife_survey_sightings WHERE survey_id = ?", (survey_id,))
