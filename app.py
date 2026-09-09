@@ -745,23 +745,35 @@ def show_login():
         if st.form_submit_button("Login", use_container_width=True):
             USERS = {
                 "jeff": {"pw": "duckhunt", "role": "admin"},
+                "jeffery.utley@gmail.com": {"pw": "duckhunt", "role": "admin"},
+                "admin@ddhunt.com": {"pw": "duckhunt", "role": "admin"},
                 "andrew": {"pw": "andrew123", "role": "admin"},
                 "kyle": {"pw": "kyle123", "role": "admin"},
                 "adam": {"pw": "adam123", "role": "admin"},
                 "justin": {"pw": "justin123", "role": "admin"},
                 "mcguire": {"pw": "mcguire123", "role": "admin"},
                 "caleb": {"pw": "caleb123", "role": "admin"},
+                "calebjutley@icloud.com": {"pw": "caleb123", "role": "admin"},
                 "penick": {"pw": "penick123", "role": "admin"},
+                "penick.river@icloud.com": {"pw": "penick123", "role": "admin"},
                 "river": {"pw": "river123", "role": "admin"},
             }
-            if u in USERS and USERS[u]["pw"] == p:
+            key = (u or "").strip().lower()
+            if key in USERS and USERS[key]["pw"] == p:
                 st.session_state.logged_in = True
-                st.session_state.username = u
-                st.session_state.role = USERS[u]["role"]
+                # Prefer short display name when email alias is used
+                display = {
+                    "jeffery.utley@gmail.com": "jeff",
+                    "admin@ddhunt.com": "jeff",
+                    "calebjutley@icloud.com": "caleb",
+                    "penick.river@icloud.com": "penick",
+                }.get(key, key)
+                st.session_state.username = display
+                st.session_state.role = USERS[key]["role"]
                 st.rerun()
             else:
                 st.error("Invalid login. Please use your assigned username and password.")
-    st.caption("Use your club username (like jeff) — not your email.")
+    st.caption("Sign in with your email or club username.")
 
 
 # ---------------- MAIN APP ----------------
