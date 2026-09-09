@@ -744,8 +744,6 @@ def show_login():
         p = st.text_input("Password", type="password")
         if st.form_submit_button("Login", use_container_width=True):
             USERS = {
-                "admin": {"pw": "admin123", "role": "admin"},
-                "viewer": {"pw": "viewer123", "role": "viewer"},
                 "jeff": {"pw": "duckhunt", "role": "admin"},
                 "andrew": {"pw": "andrew123", "role": "admin"},
                 "kyle": {"pw": "kyle123", "role": "admin"},
@@ -763,7 +761,7 @@ def show_login():
                 st.rerun()
             else:
                 st.error("Invalid login. Please use your assigned username and password.")
-    st.info("Club accounts: jeff, andrew, kyle, adam, justin, mcguire, caleb, penick, river (all full access)  •  Backup: admin/admin123 or viewer/viewer123")
+    st.caption("Use your club username (like jeff) — not your email.")
 
 
 # ---------------- MAIN APP ----------------
