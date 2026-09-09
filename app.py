@@ -1,762 +1,1353 @@
+#!/usr/bin/env python3
+"""
+DD Hunt Tracker
+Enhanced Streamlit app (Wildlife Survey + penick/river logins 2026-09-08) for duck club daily hunting logs.
+Features: photo attachments, season tracking, multi-user roles, PDF reports, eBird export, PWA-ready UI.
+Logo: DD Lodge Entrance Logo
+"""
+
 import streamlit as st
-from supabase import create_client, Client
 import pandas as pd
-from datetime import date, datetime, timedelta
+import plotly.express as px
+import sqlite3
+from datetime import date, datetime
+from pathlib import Path
 import os
+from fpdf import FPDF
 import requests
-import logging
-import altair as alt   # new import for analytics charts
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ---------------- CONFIG ----------------
+st.set_page_config(
+    page_title="DD Hunt Tracker",
+    page_icon="🦆",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# ==================== CONFIGURATION ====================
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+BASE_DIR = Path(__file__).parent
+DB_PATH = BASE_DIR / "duck_hunt.db"
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+LOGO_PATH = BASE_DIR / "logo-1.png"
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("❌ Missing Supabase credentials. Please set SUPABASE_URL and SUPABASE_KEY environment variables.")
-    st.stop()
+# Species exactly matching the paper form
+SPECIES = [
+    "Mallard", "Gadwall", "Teal", "Pintail", "Wood Duck",
+    "Widgeon", "Shoveler", "Canvasback", "Redhead", "Divers", "Geese"
+]
+SPECIES_COLS = {sp: sp.lower().replace(" ", "_") + "_count" for sp in SPECIES}
 
-try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-except Exception as e:
-    st.error(f"❌ Failed to connect to Supabase: {str(e)}")
-    logger.error(f"Supabase connection error: {str(e)}")
-    st.stop()
+# Canonical farm / hunt spots — keep spelling consistent
+LOCATION_OPTIONS = [
+    "South Block",
+    "Money",
+    "Refuge",
+    "Willow",
+    "Bar Pit",
+    "Black Bayou",
+    "Other...",
+]
 
-# Page configuration
-st.set_page_config(page_title="DD Hunt Tracker", page_icon="🦆", layout="wide")
+# Wildlife Survey locations = hunt spots + farm plots
+WILDLIFE_LOCATION_OPTIONS = [
+    "South Block",
+    "Money",
+    "Refuge",
+    "Willow",
+    "Bar Pit",
+    "Black Bayou",
+    "North Plot",
+    "Bayou Plot",
+    "Sunflower Patch",
+    "Other...",
+]
 
-# Initialize session state
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.username = ""
+# Wildlife Survey: same ducks as Submit Report + deer/turkey. Presence only — no counts.
+WILDLIFE_PRESET_SPECIES = SPECIES + ["Deer", "Turkey"]
 
-SPECIES = ["mallard", "gadwall", "teal", "pintail", "wood_duck", "widgeon", "shoveler", "canvasback", "redhead", "divers", "geese"]
-USGS_SITE_NUMBER = "07024175"  # Wolf River site
 
-# ==================== WEATHER FUNCTION ====================
-@st.cache_data(ttl=3600)
-def get_weather_data(hunt_date):
-    """
-    Fetch weather data from Open-Meteo API.
-    Uses forecast API for today, archive API for past dates.
-    """
-    lat = 36.68218
-    lon = -89.37869
-    
+def location_picker(label="Location / Blind *", current=None, key_prefix="loc", options=None):
+    """Dropdown of known spots + Other free text. Returns stripped location or empty string."""
+    options = list(options or LOCATION_OPTIONS)
+    current = (current or "").strip()
+    known = [o for o in options if o != "Other..."]
+    if current and current not in known:
+        default_choice = "Other..."
+        default_other = current
+    elif current in known:
+        default_choice = current
+        default_other = ""
+    else:
+        default_choice = options[0]
+        default_other = ""
+
     try:
-        if hunt_date == date.today():
-            url = "https://api.open-meteo.com/v1/forecast"
-            params = {
-                "latitude": lat,
-                "longitude": lon,
-                "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
-                "timezone": "America/Chicago",
-                "temperature_unit": "fahrenheit",
-                "forecast_days": 1
-            }
-        else:
-            url = "https://archive-api.open-meteo.com/v1/archive"
-            params = {
-                "latitude": lat,
-                "longitude": lon,
-                "start_date": hunt_date.strftime("%Y-%m-%d"),
-                "end_date": hunt_date.strftime("%Y-%m-%d"),
-                "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "wind_speed_10m_max", "wind_direction_10m_dominant"],
-                "timezone": "America/Chicago",
-                "temperature_unit": "fahrenheit"
-            }
-        
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        daily = data.get("daily", {})
+        idx = options.index(default_choice)
+    except ValueError:
+        idx = 0
 
-        # Safely extract numeric values (APIs sometimes return strings)
-        def first_as_float(container, default=0.0):
-            try:
-                val = container[0]
-                return float(val) if val is not None else float(default)
-            except Exception:
-                return float(default)
-        
-        high_raw = daily.get("temperature_2m_max", [55])
-        low_raw = daily.get("temperature_2m_min", [40])
-        wind_speed_raw = daily.get("wind_speed_10m_max", [0])
-        wind_dir_raw = daily.get("wind_direction_10m_dominant", [0])
-        precip_mm_raw = daily.get("precipitation_sum", [0])
+    choice = st.selectbox(label, options, index=idx, key=f"{key_prefix}_select")
+    other = ""
+    if choice == "Other...":
+        other = st.text_input(
+            "Other location (required)",
+            value=default_other,
+            placeholder="Type the spot name…",
+            key=f"{key_prefix}_other",
+        )
+        return (other or "").strip()
+    return choice
 
-        high = int(round(first_as_float(high_raw, 55) or 55))
-        low = int(round(first_as_float(low_raw, 40) or 40))
 
-        # Open-Meteo returns precipitation_sum in millimeters (mm). Convert to inches.
-        rain_mm = first_as_float(precip_mm_raw, 0)
-        rain_in = float(round(rain_mm / 25.4, 2))
-        
-        wind_speed = int(round(first_as_float(wind_speed_raw, 0) or 0))
-        wind_dir = int(round(first_as_float(wind_dir_raw, 0) or 0))
-        
-        directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-        wind_text = f"{wind_speed} mph {directions[int((wind_dir % 360) / 22.5) % 16]}"
-        
-        return {"high_temp": high, "low_temp": low, "rainfall": rain_in, "wind": wind_text}
-    except requests.RequestException as e:
-        logger.warning(f"Weather API error: {str(e)}")
-        return {"high_temp": 55, "low_temp": 40, "rainfall": 0.0, "wind": "N/A"}
-    except Exception as e:
-        logger.error(f"Unexpected weather error: {str(e)}")
-        return {"high_temp": 55, "low_temp": 40, "rainfall": 0.0, "wind": "N/A"}
+CLUB_NAME = "DD"
+APP_TITLE = f"🦆 {CLUB_NAME} Hunt Tracker"
 
-# ==================== RIVER LEVEL FUNCTION ====================
-@st.cache_data(ttl=1800)
-def get_river_level():
-    """
-    Fetch real-time river level data from USGS Water Services API.
-    Returns gage height in feet for Wolf River (site 07024175).
-    """
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def get_season_from_date(d: date) -> str:
+    """Duck season: Sept–Feb typical. Returns 'YYYY-YYYY' string."""
+    year = d.year
+    if d.month >= 9:
+        return f"{year}-{year + 1}"
+    else:
+        return f"{year - 1}-{year}"
+
+
+def init_db():
+    """Create tables + migrate schema safely."""
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    # Core hunts table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS hunts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            location TEXT,
+            wind TEXT,
+            temp_high INTEGER,
+            temp_low INTEGER,
+            river_level TEXT,
+            mallard_count INTEGER DEFAULT 0,
+            gadwall_count INTEGER DEFAULT 0,
+            teal_count INTEGER DEFAULT 0,
+            pintail_count INTEGER DEFAULT 0,
+            wood_duck_count INTEGER DEFAULT 0,
+            widgeon_count INTEGER DEFAULT 0,
+            shoveler_count INTEGER DEFAULT 0,
+            canvasback_count INTEGER DEFAULT 0,
+            redhead_count INTEGER DEFAULT 0,
+            divers_count INTEGER DEFAULT 0,
+            geese_count INTEGER DEFAULT 0,
+            notes TEXT,
+            season TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Hunters junction
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS hunt_hunters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hunt_id INTEGER NOT NULL,
+            hunter_name TEXT NOT NULL,
+            FOREIGN KEY (hunt_id) REFERENCES hunts(id) ON DELETE CASCADE
+        )
+    """)
+
+    # Photos table (new)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS hunt_photos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hunt_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            caption TEXT,
+            uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (hunt_id) REFERENCES hunts(id) ON DELETE CASCADE
+        )
+    """)
+
+    # Add season column if missing (migration)
     try:
-        url = "https://waterservices.usgs.gov/nwis/iv/"
-        params = {
-            "format": "json",
-            "sites": USGS_SITE_NUMBER,
-            "parameterCd": "00065"  # 00065 = Gage height (feet)
+        c.execute("ALTER TABLE hunts ADD COLUMN season TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Add rainfall column if missing (migration)
+    try:
+        c.execute("ALTER TABLE hunts ADD COLUMN rainfall REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    # Wildlife survey (scouting) — presence-based, separate from harvest hunts
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS wildlife_surveys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            survey_date TEXT NOT NULL,
+            location TEXT NOT NULL,
+            observers TEXT,
+            notes TEXT,
+            created_by TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS wildlife_survey_sightings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            survey_id INTEGER NOT NULL,
+            species TEXT NOT NULL,
+            FOREIGN KEY (survey_id) REFERENCES wildlife_surveys(id) ON DELETE CASCADE
+        )
+    """)
+
+    conn.commit()
+
+    # Backfill season for any existing rows
+    c.execute("SELECT id, date FROM hunts WHERE season IS NULL OR season = ''")
+    for row in c.fetchall():
+        try:
+            d = datetime.strptime(row[1], "%Y-%m-%d").date()
+            season = get_season_from_date(d)
+            c.execute("UPDATE hunts SET season = ? WHERE id = ?", (season, row[0]))
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+
+
+def get_all_hunts_df(season_filter: str | None = None) -> pd.DataFrame:
+    """Return hunts with daily_total, hunters, and optional season filter."""
+    conn = get_db_connection()
+    query = """
+        SELECT 
+            h.*,
+            GROUP_CONCAT(hh.hunter_name, ' | ') AS hunters
+        FROM hunts h
+        LEFT JOIN hunt_hunters hh ON h.id = hh.hunt_id
+        GROUP BY h.id
+        ORDER BY h.date DESC, h.id DESC
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    if df.empty:
+        return df
+
+    count_cols = [col for col in df.columns if col.endswith("_count")]
+    df["daily_total"] = df[count_cols].sum(axis=1).astype(int)
+
+    if "season" not in df.columns or df["season"].isna().all():
+        df["season"] = df["date"].apply(
+            lambda x: get_season_from_date(datetime.strptime(x, "%Y-%m-%d").date())
+        )
+
+    if season_filter and season_filter != "All":
+        df = df[df["season"] == season_filter]
+
+    return df
+
+
+def add_hunt(data: dict, hunters: list[str]) -> int:
+    """Insert hunt + hunters. Auto-computes season if missing."""
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    if "season" not in data or not data.get("season"):
+        d = datetime.fromisoformat(data["date"]).date()
+        data["season"] = get_season_from_date(d)
+
+    count_cols = list(SPECIES_COLS.values())
+    all_cols = ["date", "location", "wind", "temp_high", "temp_low", "river_level", "rainfall", "notes", "season"] + count_cols
+    placeholders = ", ".join(["?"] * len(all_cols))
+    col_names = ", ".join(all_cols)
+
+    values = [
+        data.get("date"), data.get("location"), data.get("wind"),
+        data.get("temp_high"), data.get("temp_low"), data.get("river_level"),
+        data.get("rainfall", 0.0),
+        data.get("notes"), data.get("season")
+    ]
+    for sp in SPECIES:
+        values.append(int(data.get(SPECIES_COLS[sp], 0)))
+
+    c.execute(f"INSERT INTO hunts ({col_names}) VALUES ({placeholders})", values)
+    hunt_id = c.lastrowid
+
+    for name in hunters:
+        name = name.strip()
+        if name:
+            c.execute("INSERT INTO hunt_hunters (hunt_id, hunter_name) VALUES (?, ?)", (hunt_id, name))
+
+    conn.commit()
+    conn.close()
+    return hunt_id
+
+
+def get_hunt_details(hunt_id: int) -> dict:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM hunts WHERE id = ?", (hunt_id,))
+    hunt_row = c.fetchone()
+    if not hunt_row:
+        conn.close()
+        return {}
+    hunt = dict(hunt_row)
+
+    c.execute("SELECT hunter_name FROM hunt_hunters WHERE hunt_id = ? ORDER BY id", (hunt_id,))
+    hunt["hunters"] = [r[0] for r in c.fetchall()]
+
+    conn.close()
+    return hunt
+
+
+def update_hunt(hunt_id: int, data: dict, hunters: list[str]):
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    if "season" not in data or not data.get("season"):
+        d = datetime.fromisoformat(data["date"]).date()
+        data["season"] = get_season_from_date(d)
+
+    count_cols = list(SPECIES_COLS.values())
+    set_cols = ["date", "location", "wind", "temp_high", "temp_low", "river_level", "notes", "season"] + count_cols
+    set_clause = ", ".join([f"{col} = ?" for col in set_cols])
+
+    values = [
+        data.get("date"), data.get("location"), data.get("wind"),
+        data.get("temp_high"), data.get("temp_low"), data.get("river_level"),
+        data.get("rainfall", 0.0),
+        data.get("notes"), data.get("season")
+    ]
+    for sp in SPECIES:
+        values.append(int(data.get(SPECIES_COLS[sp], 0)))
+    values.append(hunt_id)
+
+    c.execute(f"UPDATE hunts SET {set_clause} WHERE id = ?", values)
+
+    c.execute("DELETE FROM hunt_hunters WHERE hunt_id = ?", (hunt_id,))
+    for name in hunters:
+        name = name.strip()
+        if name:
+            c.execute("INSERT INTO hunt_hunters (hunt_id, hunter_name) VALUES (?, ?)", (hunt_id, name))
+
+    conn.commit()
+    conn.close()
+
+
+def delete_hunt(hunt_id: int):
+    conn = get_db_connection()
+    c = conn.cursor()
+    # Photos and files cleaned by cascade + manual
+    c.execute("SELECT filename FROM hunt_photos WHERE hunt_id = ?", (hunt_id,))
+    for row in c.fetchall():
+        try:
+            (UPLOAD_DIR / row[0]).unlink(missing_ok=True)
+        except:
+            pass
+    c.execute("DELETE FROM hunt_photos WHERE hunt_id = ?", (hunt_id,))
+    c.execute("DELETE FROM hunt_hunters WHERE hunt_id = ?", (hunt_id,))
+    c.execute("DELETE FROM hunts WHERE id = ?", (hunt_id,))
+    conn.commit()
+    conn.close()
+
+
+def add_photos_to_hunt(hunt_id: int, uploaded_files: list, captions: list[str] | None = None):
+    """Save uploaded images and link to hunt."""
+    if captions is None:
+        captions = [""] * len(uploaded_files)
+    for i, up_file in enumerate(uploaded_files):
+        if up_file is None:
+            continue
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_name = "".join(c for c in up_file.name if c.isalnum() or c in "._-").rstrip() or "photo.jpg"
+        filename = f"hunt{hunt_id}_{timestamp}_{safe_name}"
+        file_path = UPLOAD_DIR / filename
+        with open(file_path, "wb") as f:
+            f.write(up_file.getbuffer())
+
+        cap = captions[i].strip() if i < len(captions) else ""
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO hunt_photos (hunt_id, filename, caption) VALUES (?, ?, ?)",
+            (hunt_id, filename, cap)
+        )
+        conn.commit()
+        conn.close()
+
+
+def get_hunt_photos(hunt_id: int) -> list[dict]:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, filename, caption, uploaded_at 
+        FROM hunt_photos 
+        WHERE hunt_id = ? 
+        ORDER BY uploaded_at DESC
+    """, (hunt_id,))
+    photos = []
+    for row in c.fetchall():
+        photos.append({
+            "id": row[0],
+            "filename": row[1],
+            "caption": row[2] or "",
+            "uploaded_at": row[3],
+            "full_path": str(UPLOAD_DIR / row[1])
+        })
+    conn.close()
+    return photos
+
+
+def delete_photo(photo_id: int):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT filename FROM hunt_photos WHERE id = ?", (photo_id,))
+    row = c.fetchone()
+    if row:
+        try:
+            (UPLOAD_DIR / row[0]).unlink(missing_ok=True)
+        except:
+            pass
+        c.execute("DELETE FROM hunt_photos WHERE id = ?", (photo_id,))
+    conn.commit()
+    conn.close()
+
+
+def load_sample_data() -> bool:
+    """Load demo hunts if DB empty."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM hunts")
+    if c.fetchone()[0] > 0:
+        conn.close()
+        return False
+
+    samples = [
+        {
+            "date": "2025-11-15", "location": "North Levee - Club Lease",
+            "wind": "NW 10-15 mph, gusty", "temp_high": 54, "temp_low": 39,
+            "river_level": "Normal 7.2 ft - falling",
+            "notes": "Excellent morning flight. Big mallards and gadwalls. Wood ducks late.",
+            "counts": {"Mallard": 11, "Gadwall": 7, "Teal": 5, "Pintail": 3, "Wood Duck": 2,
+                       "Widgeon": 1, "Shoveler": 4, "Canvasback": 0, "Redhead": 0, "Divers": 0, "Geese": 0},
+            "hunters": ["Jeff Utley", "Mike Thompson", "Chris Reed"]
+        },
+        {
+            "date": "2025-11-22", "location": "South Blind - Backwater",
+            "wind": "SE 5-8 mph, light", "temp_high": 48, "temp_low": 32,
+            "river_level": "Low 6.4 ft",
+            "notes": "Slow start then teal and widgeon picked up. Divers in distance.",
+            "counts": {"Mallard": 4, "Gadwall": 3, "Teal": 9, "Pintail": 1, "Wood Duck": 0,
+                       "Widgeon": 4, "Shoveler": 2, "Canvasback": 0, "Redhead": 1, "Divers": 2, "Geese": 0},
+            "hunters": ["Jeff Utley", "David Kline", "Sarah Patel"]
+        },
+        {
+            "date": "2025-12-06", "location": "Club Main Pond",
+            "wind": "N 15-20 mph, cold", "temp_high": 38, "temp_low": 22,
+            "river_level": "Rising 8.1 ft - muddy",
+            "notes": "Tough but limited on mallards. Canvasbacks and redheads with the wind. Memorable!",
+            "counts": {"Mallard": 14, "Gadwall": 2, "Teal": 1, "Pintail": 0, "Wood Duck": 0,
+                       "Widgeon": 0, "Shoveler": 0, "Canvasback": 3, "Redhead": 4, "Divers": 1, "Geese": 2},
+            "hunters": ["Jeff Utley", "Mike Thompson", "Robert Hayes", "Tom Wilson"]
+        },
+        {
+            "date": "2026-01-10", "location": "North Levee - Club Lease",
+            "wind": "W 12 mph", "temp_high": 45, "temp_low": 28,
+            "river_level": "Normal 7.0 ft",
+            "notes": "Late season divers and redheads. Geese high. Nice mallard pairs to close strong.",
+            "counts": {"Mallard": 6, "Gadwall": 5, "Teal": 0, "Pintail": 2, "Wood Duck": 1,
+                       "Widgeon": 2, "Shoveler": 1, "Canvasback": 2, "Redhead": 5, "Divers": 7, "Geese": 3},
+            "hunters": ["Jeff Utley", "Chris Reed"]
         }
-        
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Extract gage height value
-        values = data.get("value", {}).get("timeSeries", [])
-        if values and len(values) > 0:
-            latest_data = values[0].get("values", [{}])[0].get("value", [{}])
-            if latest_data and len(latest_data) > 0:
-                gage_height = float(latest_data[-1].get("value"))
-                return f"{gage_height:.2f} ft"
-        
-        return "N/A"
-    except requests.RequestException as e:
-        logger.warning(f"River level API error: {str(e)}")
-        return "N/A"
-    except Exception as e:
-        logger.error(f"Unexpected river level error: {str(e)}")
-        return "N/A"
+    ]
 
-# ==================== AUTHENTICATION ====================
-def show_login():
-    """Display login form"""
-    st.title("🦆 DD Hunt Tracker")
-    st.write("Track your duck hunting season")
-    
-    with st.form("login"):
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Login")
-        
-        if submit:
-            if not email or not password:
-                st.error("❌ Please enter both email and password")
-                return
-            
-            try:
-                supabase.auth.sign_in_with_password({"email": email, "password": password})
-                st.session_state.logged_in = True
-                st.session_state.username = email.split("@")[0]
-                st.success("✅ Login successful!")
-                st.rerun()
-            except Exception as e:
-                logger.error(f"Login error: {str(e)}")
-                st.error("❌ Invalid email or password")
+    for s in samples:
+        data = {k: s[k] for k in ["date", "location", "wind", "temp_high", "temp_low", "river_level", "notes"]}
+        for sp in SPECIES:
+            data[SPECIES_COLS[sp]] = s["counts"].get(sp, 0)
+        add_hunt(data, s["hunters"])
 
-def logout():
-    """Handle logout"""
-    st.session_state.logged_in = False
-    st.session_state.username = ""
-    st.rerun()
+    conn.close()
+    return True
 
-if not st.session_state.logged_in:
-    show_login()
-    st.stop()
 
-# ==================== SIDEBAR ====================
-with st.sidebar:
+# ---------------- AUTO-FILL HELPERS (River + Weather) ----------------
+def get_river_level_usgs(target_date: date) -> str | None:
+    """Fetch daily gage height (ft) for New Madrid USGS site 07024175 (Mississippi River)."""
     try:
-        st.image("dd_logo.png", width=160)
-    except:
-        st.title("🦆 DD Hunt Tracker")
-    
-    st.write(f"👤 Logged in as: **{st.session_state.username}**")
-    if st.button("🚪 Logout", use_container_width=True):
-        logout()
-    
-    st.divider()
-    st.write("**Season:** 2025-2026")
+        start = target_date.isoformat()
+        end = target_date.isoformat()
+        url = (
+            "https://waterservices.usgs.gov/nwis/dv/"
+            f"?format=json&sites=07024175&parameterCd=00065&startDT={start}&endDT={end}"
+        )
+        resp = requests.get(url, timeout=12)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        ts = data.get("value", {}).get("timeSeries", [])
+        if not ts:
+            return None
+        values = ts[0].get("values", [{}])[0].get("value", [])
+        if not values:
+            return None
+        val = float(values[0]["value"])
+        return f"{val:.1f} ft"
+    except Exception:
+        return None
 
-# ==================== MAIN APP ====================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📝 Submit Report", "📋 Hunt History", "📈 Analytics", "✏️ Edit Hunts"])
 
-# ==================== TAB 1: DASHBOARD ====================
-with tab1:
-    st.header("Dashboard")
-    
+def get_weather_open_meteo(target_date: date, lat: float = 36.68218, lon: float = -89.37869) -> dict | None:
+    """
+    Smart weather fetch:
+    - If date == today: Use forecast API to get rainfall so far today + daily values
+    - If date is in the past: Use historical archive API for accurate full-day rainfall
+    """
+    today = date.today()
     try:
-        response = supabase.table("hunts").select("*").order("date", desc=True).limit(10).execute()
-        
-        if response.data:
-            df = pd.DataFrame(response.data)
-            df["date"] = pd.to_datetime(df["date"])
-            df["Date"] = df["date"].dt.strftime("%b %d, %Y")
-            
-            # Calculate totals
-            total_hunts = len(df)
-            total_ducks = df[SPECIES].sum().sum()
-            avg_per_hunt = int(total_ducks / total_hunts) if total_hunts > 0 else 0
-            
-            # Display metrics
-            col1, col2, col3 = st.columns(3)
-            col1.metric("🦆 Total Ducks (10 hunts)", int(total_ducks))
-            col2.metric("🎯 Hunt Count", total_hunts)
-            col3.metric("📊 Avg per Hunt", avg_per_hunt)
-            
-            st.divider()
-            
-            # Get all hunts for season graph
-            response_all = supabase.table("hunts").select("*").order("date", desc=False).execute()
-            if response_all.data:
-                df_all = pd.DataFrame(response_all.data)
-                df_all["date"] = pd.to_datetime(df_all["date"])
-                df_all["Total"] = df_all[SPECIES].sum(axis=1)
-                df_all = df_all.sort_values("date")
-                
-                # Cumulative total for the season
-                df_all["Cumulative Total"] = df_all["Total"].cumsum()
-                
-                st.subheader("📈 Season Cumulative Birds Harvested")
-                st.line_chart(df_all.set_index("date")[["Cumulative Total"]])
-            
-            st.divider()
-            st.subheader("Recent Hunts")
-            
-            # Calculate highest species for each hunt
-            df["Total"] = df[SPECIES].sum(axis=1)
-            df["Highest Species"] = df[SPECIES].apply(
-                lambda row: row.idxmax().replace("_", " ").title() + f" ({int(row.max())})" if row.max() > 0 else "None",
-                axis=1
+        if target_date == today:
+            # Today → use forecast for "rainfall so far today"
+            url = (
+                "https://api.open-meteo.com/v1/forecast"
+                f"?latitude={lat}&longitude={lon}"
+                "&current=precipitation"
+                "&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max,winddirection_10m_dominant"
+                "&timezone=America/Chicago&temperature_unit=fahrenheit&wind_speed_unit=mph"
             )
-            
-            display_df = df[["Date", "location", "Highest Species", "Total", "river_level"]].copy()
-            display_df.columns = ["Date", "Location", "Top Species", "Total Ducks", "River Level"]
-            
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            resp = requests.get(url, timeout=12)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+
+            daily = data.get("daily", {})
+            current = data.get("current", {})
+
+            if not daily.get("temperature_2m_max"):
+                return None
+
+            wind_speed = int(round(daily['wind_speed_10m_max'][0]))
+            wind_dir = int(round(daily.get('winddirection_10m_dominant', [0])[0]))
+            directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                          "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+            wind_dir_text = directions[int((wind_dir + 11.25) / 22.5) % 16]
+
+            # Rainfall so far today (from current)
+            rainfall_so_far = round(current.get("precipitation", 0.0), 2)
+
+            return {
+                "temp_high": int(round(daily["temperature_2m_max"][0])),
+                "temp_low": int(round(daily["temperature_2m_min"][0])),
+                "wind": f"{wind_speed} mph {wind_dir_text}",
+                "rainfall": rainfall_so_far
+            }
+
         else:
-            st.info("ℹ️ No hunts recorded yet. Start by submitting your first hunt report!")
+            # Past date → use historical archive for accurate full day rainfall
+            url = (
+                "https://archive-api.open-meteo.com/v1/archive"
+                f"?latitude={lat}&longitude={lon}"
+                f"&start_date={target_date.isoformat()}&end_date={target_date.isoformat()}"
+                "&daily=temperature_2m_max,temperature_2m_min,wind_speed_10m_max,winddirection_10m_dominant,precipitation_sum"
+                "&timezone=America/Chicago&temperature_unit=fahrenheit&wind_speed_unit=mph"
+            )
+            resp = requests.get(url, timeout=12)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            daily = data.get("daily", {})
+            if not daily.get("temperature_2m_max"):
+                return None
+
+            wind_speed = int(round(daily['wind_speed_10m_max'][0]))
+            wind_dir = int(round(daily.get('winddirection_10m_dominant', [0])[0]))
+            directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                          "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+            wind_dir_text = directions[int((wind_dir + 11.25) / 22.5) % 16]
+
+            rainfall = round(daily.get("precipitation_sum", [0.0])[0], 2)
+
+            return {
+                "temp_high": int(round(daily["temperature_2m_max"][0])),
+                "temp_low": int(round(daily["temperature_2m_min"][0])),
+                "wind": f"{wind_speed} mph {wind_dir_text}",
+                "rainfall": rainfall
+            }
+
+    except Exception:
+        return None
+
+
+def render_species_input_grid(defaults: dict | None = None, key_prefix: str = "species") -> dict:
+    if defaults is None:
+        defaults = {sp: 0 for sp in SPECIES}
+    counts = {}
+    cols = st.columns(3)
+    for i, sp in enumerate(SPECIES):
+        with cols[i % 3]:
+            counts[sp] = st.number_input(
+                sp, min_value=0, max_value=200, value=int(defaults.get(sp, 0)),
+                step=1, key=f"{key_prefix}_{sp}"
+            )
+    return counts
+
+
+def generate_pdf_report(period_label: str, df: pd.DataFrame, species_totals: dict, output_path: Path):
+    """Create professional PDF report with logo."""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # Logo header
+    if LOGO_PATH.exists():
+        pdf.image(str(LOGO_PATH), x=10, y=8, w=35)
+
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.set_text_color(30, 60, 90)
+    pdf.cell(0, 12, "DD Hunt Report", ln=True, align="C")
+    pdf.set_font("Helvetica", "", 12)
+    pdf.set_text_color(80, 80, 80)
+    pdf.cell(0, 7, f"Period: {period_label}", ln=True, align="C")
+    pdf.ln(8)
+
+    # Summary box
+    pdf.set_fill_color(240, 248, 255)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, "Season Highlights", ln=True, fill=True)
+    pdf.set_font("Helvetica", "", 11)
+    total_ducks = int(df["daily_total"].sum()) if not df.empty else 0
+    pdf.cell(0, 7, f"- Total Ducks Harvested: {total_ducks:,}", ln=True)
+    pdf.cell(0, 7, f"- Hunting Days: {len(df)}", ln=True)
+    if not df.empty:
+        pdf.cell(0, 7, f"- Average Daily Bag: {df['daily_total'].mean():.1f}", ln=True)
+        pdf.cell(0, 7, f"- Best Day: {int(df['daily_total'].max())} ducks", ln=True)
+    pdf.ln(6)
+
+    # Hunt table
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Detailed Hunt Log", ln=True)
+    pdf.set_font("Helvetica", "B", 9)
+    col_widths = [22, 45, 14, 55, 40]
+    headers = ["Date", "Location", "Ducks", "Hunters", "Weather/River"]
+    for i, h in enumerate(headers):
+        pdf.cell(col_widths[i], 7, h, border=1, align="C")
+    pdf.ln()
+    pdf.set_font("Helvetica", "", 8)
+    for _, row in df.iterrows():
+        pdf.cell(col_widths[0], 6, str(row["date"]), border=1)
+        pdf.cell(col_widths[1], 6, str(row.get("location", ""))[:28], border=1)
+        pdf.cell(col_widths[2], 6, str(int(row["daily_total"])), border=1, align="C")
+        hunters = str(row.get("hunters", ""))[:32]
+        pdf.cell(col_widths[3], 6, hunters, border=1)
+        weather = f"{row.get('wind','')[:18]} / {row.get('river_level','')[:12]}"
+        pdf.cell(col_widths[4], 6, weather, border=1)
+        pdf.ln()
+    pdf.ln(5)
+
+    # Species summary
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Species Breakdown", ln=True)
+    pdf.set_font("Helvetica", "", 10)
+    sorted_species = sorted(species_totals.items(), key=lambda x: -x[1])
+    for sp, cnt in sorted_species:
+        if cnt > 0:
+            pdf.cell(0, 6, f"   {sp}: {cnt} birds", ln=True)
+    pdf.ln(6)
+
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 6, f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  -  DD Hunt Tracker  -  Private Club Use Only", ln=True, align="C")
+
+    pdf.output(str(output_path))
+    return output_path
+
+
+
+def add_wildlife_survey(survey_date: str, location: str, species_list: list[str], observers: str = "", notes: str = "", created_by: str = "") -> int:
+    """Quick scouting log — store which species were seen, no counts."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """INSERT INTO wildlife_surveys (survey_date, location, observers, notes, created_by)
+           VALUES (?, ?, ?, ?, ?)""",
+        (survey_date, location, observers.strip(), notes.strip(), created_by),
+    )
+    survey_id = c.lastrowid
+    seen = []
+    for sp in species_list:
+        sp = (sp or "").strip()
+        if sp and sp not in seen:
+            seen.append(sp)
+            c.execute(
+                "INSERT INTO wildlife_survey_sightings (survey_id, species) VALUES (?, ?)",
+                (survey_id, sp),
+            )
+    conn.commit()
+    conn.close()
+    return survey_id
+
+
+def get_all_wildlife_surveys_df() -> pd.DataFrame:
+    conn = get_db_connection()
+    query = """
+        SELECT
+            s.id,
+            s.survey_date,
+            s.location,
+            s.observers,
+            s.notes,
+            s.created_by,
+            s.created_at,
+            GROUP_CONCAT(w.species, ', ') AS species_seen
+        FROM wildlife_surveys s
+        LEFT JOIN wildlife_survey_sightings w ON s.id = w.survey_id
+        GROUP BY s.id
+        ORDER BY s.survey_date DESC, s.id DESC
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
+
+
+def delete_wildlife_survey(survey_id: int):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM wildlife_survey_sightings WHERE survey_id = ?", (survey_id,))
+    c.execute("DELETE FROM wildlife_surveys WHERE id = ?", (survey_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------- LOGIN SYSTEM ----------------
+def show_login():
+    # Professional centered logo + title
+    st.markdown("<br><br>", unsafe_allow_html=True)
     
-    except Exception as e:
-        logger.error(f"Dashboard error: {str(e)}")
-        st.error(f"❌ Error loading dashboard: {str(e)}")
-
-# ==================== TAB 2: SUBMIT REPORT ====================
-with tab2:
-    st.header("Submit Daily Hunt Report")
-   
-    hunt_date = st.date_input("Hunt Date", value=date.today())
-   
-    # Auto-load weather and river level when date changes
-    if "last_hunt_date" not in st.session_state or hunt_date != st.session_state.last_hunt_date:
-        st.session_state.last_hunt_date = hunt_date
-        weather = get_weather_data(hunt_date)
-        if weather:
-            st.session_state.auto_high = weather["high_temp"]
-            st.session_state.auto_low = weather["low_temp"]
-            st.session_state.auto_rainfall = float(weather["rainfall"])
-            st.session_state.auto_wind = weather["wind"]
-            st.success(f"☀️ Weather loaded for {hunt_date.strftime('%b %d, %Y')}")
-       
-        river_level = get_river_level()
-        st.session_state.auto_river_level = river_level
-        if river_level != "N/A":
-            st.success(f"💧 River level loaded: {river_level}")
-
-    # If we just submitted on the prior run, reset species_* session keys now (before widget creation)
-    if st.session_state.get("just_submitted", False):
-        for species in SPECIES:
-            st.session_state[f"species_{species}"] = 0
-        st.session_state["just_submitted"] = False
-
-    # Initialize species counts if missing
-    for species in SPECIES:
-        if f"species_{species}" not in st.session_state:
-            st.session_state[f"species_{species}"] = 0
-
-    # ===== SECTION 1: BASIC INFO (OUTSIDE FORM - updates live) =====
-    st.subheader("Hunt Details")
-    col1, col2 = st.columns(2)
-   
-    with col1:
-        location = st.text_input("Location / Blind", placeholder="e.g., North Blind, Grand Island", key="form_location")
-        wind = st.text_input("Wind", value=st.session_state.get("auto_wind", ""), placeholder="e.g., 10 mph N", key="form_wind")
-        high_temp = st.number_input("High °F", value=st.session_state.get("auto_high", 55), min_value=-20, max_value=120, key="form_high_temp")
-        low_temp = st.number_input("Low °F", value=st.session_state.get("auto_low", 40), min_value=-20, max_value=120, key="form_low_temp")
-   
-    with col2:
-        river_level = st.text_input("River Level", value=st.session_state.get("auto_river_level", ""), placeholder="e.g., 2.5 ft", key="form_river_level")
-        rainfall = st.number_input("Rainfall (inches)", value=st.session_state.get("auto_rainfall", 0.0), step=0.1, min_value=0.0, key="form_rainfall")
-        hunters = st.text_area("Hunters (one per line)", placeholder="Name each hunter on separate lines", key="form_hunters")
-        notes = st.text_area("Notes", placeholder="Any additional observations...", key="form_notes")
-
-    st.divider()
-
-    # ===== SECTION 2: SPECIES INPUT & LIVE TOTAL (OUTSIDE FORM - updates live) =====
-    st.subheader("Species Harvested")
-   
-    col1, col2, col3 = st.columns(3)
-   
-    with col1:
-        st.number_input("Mallard", min_value=0, key="species_mallard")
-        st.number_input("Gadwall", min_value=0, key="species_gadwall")
-        st.number_input("Teal", min_value=0, key="species_teal")
-        st.number_input("Pintail", min_value=0, key="species_pintail")
-   
-    with col2:
-        st.number_input("Wood Duck", min_value=0, key="species_wood_duck")
-        st.number_input("Widgeon", min_value=0, key="species_widgeon")
-        st.number_input("Shoveler", min_value=0, key="species_shoveler")
-        st.number_input("Canvasback", min_value=0, key="species_canvasback")
-   
-    with col3:
-        st.number_input("Redhead", min_value=0, key="species_redhead")
-        st.number_input("Divers", min_value=0, key="species_divers")
-        st.number_input("Geese", min_value=0, key="species_geese")
-
-    # === LIVE TOTAL (updates on every keystroke) ===
-    st.divider()
-    total_ducks = sum(st.session_state.get(f"species_{s}", 0) for s in SPECIES)
-    col_title, col_metric = st.columns([3, 1])
-    with col_title:
-        st.write("")  # Spacer
-    with col_metric:
-        st.metric("Total 🦆", int(total_ducks))
-
-    st.divider()
-
-    # ===== SECTION 3: CONFIRMATION & SUBMIT (IN FORM) =====
-    st.subheader("Review & Confirm")
+    if LOGO_PATH.exists():
+        col1, col2, col3 = st.columns([1, 1.7, 1])
+        with col2:
+            st.image(str(LOGO_PATH), width=230)
+            st.markdown(
+                "<h2 style='text-align: center; margin-top: 12px; margin-bottom: 8px; font-weight: 600;'>DD Hunt Tracker</h2>",
+                unsafe_allow_html=True
+            )
+    else:
+        st.markdown("<h1 style='text-align:center;'>DD Hunt Tracker</h1>", unsafe_allow_html=True)
     
-    with st.form("submit_hunt_confirmation"):
-        # Show summary of what will be submitted
-        st.info(f"📋 **Submission Summary:**\n- **Date:** {hunt_date.strftime('%b %d, %Y')}\n- **Location:** {location or '(not set)'}\n- **Total Ducks:** {total_ducks}\n- **Species Count:** {sum(1 for s in SPECIES if st.session_state.get(f'species_{s}', 0) > 0)}")
-        
-        submitted = st.form_submit_button("✅ Submit Hunt", use_container_width=True)
+    st.markdown("### Secure Club Access")
+    with st.form("login"):
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
+        if st.form_submit_button("Login", use_container_width=True):
+            USERS = {
+                "admin": {"pw": "admin123", "role": "admin"},
+                "viewer": {"pw": "viewer123", "role": "viewer"},
+                "jeff": {"pw": "duckhunt", "role": "admin"},
+                "andrew": {"pw": "andrew123", "role": "admin"},
+                "kyle": {"pw": "kyle123", "role": "admin"},
+                "adam": {"pw": "adam123", "role": "admin"},
+                "justin": {"pw": "justin123", "role": "admin"},
+                "mcguire": {"pw": "mcguire123", "role": "admin"},
+                "penick": {"pw": "penick123", "role": "admin"},
+                "river": {"pw": "river123", "role": "admin"},
+            }
+            if u in USERS and USERS[u]["pw"] == p:
+                st.session_state.logged_in = True
+                st.session_state.username = u
+                st.session_state.role = USERS[u]["role"]
+                st.rerun()
+            else:
+                st.error("Invalid login. Please use your assigned username and password.")
+    st.info("Club accounts: jeff, andrew, kyle, adam, justin, mcguire, penick, river (all full access)  •  Backup: admin/admin123 or viewer/viewer123")
 
-    if submitted:
-        if not location:
-            st.error("❌ Location is required")
+
+# ---------------- MAIN APP ----------------
+def main():
+    init_db()
+
+    # Session state for auth
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+        st.session_state.role = ""
+
+    if not st.session_state.logged_in:
+        show_login()
+        return
+
+    # Sidebar
+    st.sidebar.title("🦆 Navigation")
+    pages = ["Dashboard", "Submit Daily Report", "Wildlife Survey", "View Hunt History", "Season Analytics", "Reports & Exports", "Manage Data"]
+    page = st.sidebar.radio("Go to", pages, index=0)
+
+    st.sidebar.divider()
+    st.sidebar.success(f"👤 {st.session_state.username} ({st.session_state.role})")
+    if st.sidebar.button("Logout", use_container_width=True):
+        for k in ["logged_in", "username", "role"]:
+            st.session_state[k] = "" if k != "logged_in" else False
+        st.rerun()
+
+    st.sidebar.caption("📱 Mobile-friendly • Install as PWA via browser menu for app-like experience on phone/tablet.")
+
+    is_admin = st.session_state.role == "admin"
+
+    # ========== DASHBOARD ==========
+    if page == "Dashboard":
+        # Header with logo on the right
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.title(APP_TITLE)
+        with col2:
+            if LOGO_PATH.exists():
+                st.image(str(LOGO_PATH), width=90)
+        st.caption("Your digital hunting journal • Track • Analyze • Remember every flight")
+
+        df = get_all_hunts_df()
+        if df.empty:
+            st.info("No hunts yet. Submit your first report or load sample data in Manage Data.")
+            return
+
+        # Season filter
+        seasons = sorted(df["season"].dropna().unique().tolist(), reverse=True)
+        selected_season = st.selectbox("Filter by Season", ["All"] + seasons, index=0)
+        if selected_season != "All":
+            df = df[df["season"] == selected_season]
+
+        total_ducks = int(df["daily_total"].sum())
+        total_hunts = len(df)
+        avg_daily = round(df["daily_total"].mean(), 1) if total_hunts else 0
+        best_day = int(df["daily_total"].max()) if total_hunts else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Ducks", f"{total_ducks:,}")
+        c2.metric("Hunting Days", total_hunts)
+        c3.metric("Avg Daily Bag", f"{avg_daily}")
+        c4.metric("Best Day", best_day)
+
+        st.divider()
+        st.subheader("📊 Species Distribution")
+        species_totals = {sp: int(df[SPECIES_COLS[sp]].sum()) for sp in SPECIES if SPECIES_COLS[sp] in df.columns}
+        species_totals = {k: v for k, v in species_totals.items() if v > 0}
+        if species_totals:
+            fig = px.pie(values=list(species_totals.values()), names=list(species_totals.keys()),
+                         title="Harvest by Species", color_discrete_sequence=px.colors.sequential.Blues_r)
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(fig, use_container_width=True)
         else:
+            st.write("No species data.")
+
+        st.subheader("🕒 Recent Activity")
+        # Select relevant columns + all species counts
+        species_cols_list = list(SPECIES_COLS.values())
+        cols_to_get = ["date", "location", "daily_total", "hunters"] + species_cols_list
+        recent = df.head(5)[cols_to_get].copy()
+
+        def get_top_species(row):
+            max_count = 0
+            top_sp = ""
+            for sp in SPECIES:
+                col = SPECIES_COLS[sp]
+                if col in row.index and pd.notna(row[col]) and row[col] > max_count:
+                    max_count = row[col]
+                    top_sp = sp
+            if max_count > 0:
+                return f"{top_sp} {int(max_count)}"
+            return "—"
+
+        recent["Top Species"] = recent.apply(get_top_species, axis=1)
+
+        # Format date as "Dec. 6"
+        recent["Date"] = pd.to_datetime(recent["date"]).dt.strftime("%b ") + pd.to_datetime(recent["date"]).dt.day.astype(str)
+
+        # Final columns for display
+        recent = recent[["Date", "location", "daily_total", "hunters", "Top Species"]].copy()
+        recent.columns = ["Date", "Location", "Ducks", "Hunters", "Top Species"]
+        st.dataframe(recent, use_container_width=True, hide_index=True)
+
+    # ========== SUBMIT ==========
+    elif page == "Submit Daily Report":
+        if not is_admin:
+            st.warning("🔒 Viewer mode — you can view but not submit new reports.")
+            st.stop()
+
+        st.title("📝 Submit Daily Hunt Report")
+        st.caption("Matches your original paper form. Add photos of birds, scenery, or the crew!")
+
+        # ==================== NEW AUTO-FILL SECTION ====================
+        st.markdown("### 🌧️ Auto Weather")
+        st.caption("Click the button below after choosing a date. Pulls River Level + Weather (including rainfall) for your farm from official sources.")
+
+        col_date, col_btn = st.columns([1.8, 2.2])
+        with col_date:
+            hunt_date = st.date_input("Hunt Date *", value=date.today(), key="hunt_date_input")
+        with col_btn:
+            if st.button("🔄 Auto Weather", use_container_width=True, type="secondary"):
+                with st.spinner("Contacting New Madrid gauge + Open-Meteo for your farm..."):
+                    river_val = get_river_level_usgs(hunt_date)
+                    weather = get_weather_open_meteo(hunt_date)
+
+                    updated = []
+                    if river_val:
+                        st.session_state.auto_river_level = river_val
+                        updated.append("River Level")
+                    if weather:
+                        st.session_state.auto_wind = weather["wind"]
+                        st.session_state.auto_temp_high = weather["temp_high"]
+                        st.session_state.auto_temp_low = weather["temp_low"]
+                        st.session_state.auto_rainfall = weather.get("rainfall", 0.0)
+                        updated.append("Weather (temp + wind + rainfall)")
+
+                    if updated:
+                        st.success(f"✅ {' + '.join(updated)} loaded from {hunt_date}. You can still edit the values below.")
+                    else:
+                        st.warning("No data available for this date yet. Please enter the fields manually.")
+
+        # Initialize session state keys
+        if "auto_river_level" not in st.session_state:
+            st.session_state.auto_river_level = ""
+        if "auto_wind" not in st.session_state:
+            st.session_state.auto_wind = ""
+        if "auto_temp_high" not in st.session_state:
+            st.session_state.auto_temp_high = 50
+        if "auto_temp_low" not in st.session_state:
+            st.session_state.auto_temp_low = 35
+        if "auto_rainfall" not in st.session_state:
+            st.session_state.auto_rainfall = 0.0
+
+        # ==================== SUBMIT FORM ====================
+        with st.form("submit_form", clear_on_submit=False):
+            c2, c3 = st.columns(2)
+            with c2:
+                location = location_picker(label="Location / Blind *", key_prefix="submit_loc")
+            with c3:
+                wind = st.text_input("Wind", value=st.session_state.auto_wind, placeholder="NW 10-15 mph gusty")
+
+            c4, c5, c6 = st.columns(3)
+            with c4:
+                temp_high = st.number_input("High °F", -20, 110, value=st.session_state.auto_temp_high, step=1)
+            with c5:
+                temp_low = st.number_input("Low °F", -20, 110, value=st.session_state.auto_temp_low, step=1)
+            with c6:
+                river_level = st.text_input("River Level", value=st.session_state.auto_river_level, placeholder="Normal 7.2 ft - falling")
+
+            # Rainfall row
+            rainfall = st.number_input("Rainfall (inches)", min_value=0.0, max_value=20.0, value=float(st.session_state.auto_rainfall), step=0.1, format="%.2f")
+
+            st.subheader("👥 Hunters (one per line)")
+            hunters_text = st.text_area("Hunters", height=80, placeholder="Jeff Utley\nMike Thompson")
+
+            st.subheader("🦆 Species Harvested")
+            species_counts = render_species_input_grid(key_prefix="new")
+
+            st.subheader("📝 Notes")
+            notes = st.text_area("Notes / Comments", height=100, placeholder="Memorable moments, conditions...")
+
+            st.subheader("📷 Attach Photos (birds, scenery, group)")
+            photos = st.file_uploader("Upload images (jpg/png)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+            photo_captions = []
+            if photos:
+                for i, p in enumerate(photos):
+                    cap = st.text_input(f"Caption for {p.name}", key=f"cap_new_{i}", placeholder="Optional caption...")
+                    photo_captions.append(cap)
+
+            submitted = st.form_submit_button("✅ SUBMIT HUNT REPORT", use_container_width=True, type="primary")
+
+        if submitted:
+            hunters_list = [h.strip() for h in hunters_text.split("\n") if h.strip()]
+            if not location:
+                st.error("Location is required — pick a spot from the list or choose Other and type one.")
+                st.stop()
+            data = {
+                "date": st.session_state.hunt_date_input.isoformat(),
+                "location": location,
+                "wind": wind.strip(),
+                "temp_high": int(temp_high),
+                "temp_low": int(temp_low),
+                "river_level": river_level.strip(),
+                "rainfall": float(rainfall),
+                "notes": notes.strip()
+            }
+            for sp in SPECIES:
+                data[SPECIES_COLS[sp]] = species_counts.get(sp, 0)
+
             try:
-                species_counts = {s: int(st.session_state.get(f"species_{s}", 0)) for s in SPECIES}
+                new_id = add_hunt(data, hunters_list)
+                if photos:
+                    add_photos_to_hunt(new_id, photos, photo_captions)
+                daily_total = sum(species_counts.values())
+                st.success(f"🎉 Hunt #{new_id} saved! Daily total: {daily_total} ducks")
 
-                # Data is valid — insert
-                data = {
-                    "date": str(hunt_date),
-                    "location": location,
-                    "wind": wind,
-                    "high_temp": int(high_temp),
-                    "low_temp": int(low_temp),
-                    "river_level": river_level,
-                    "rainfall": float(rainfall),
-                    "hunters": hunters,
-                    "notes": notes,
-                    "season": "2025-2026",
-                    "created_by": st.session_state.username,
-                    **species_counts
-                }
+                # Flying ducks animation (replaces default balloons)
+                st.markdown("""
+<style>
+.duck-row {
+    height: 95px;
+    position: relative;
+    overflow: hidden;
+    margin: 8px 0 4px 0;
+}
+.duck {
+    position: absolute;
+    font-size: 44px;
+    animation: fly-across 2.6s linear forwards;
+    opacity: 0.92;
+    filter: drop-shadow(1px 2px 2px rgba(0,0,0,0.15));
+}
+@keyframes fly-across {
+    0%   { left: -70px; transform: translateY(12px) rotate(-7deg); }
+    100% { left: 108%; transform: translateY(-18px) rotate(5deg); }
+}
+</style>
+<div class="duck-row">
+    <div class="duck" style="animation-delay: 0s; top: 5px;">🦆</div>
+    <div class="duck" style="animation-delay: 0.5s; top: 35px; font-size: 36px;">🦆</div>
+    <div class="duck" style="animation-delay: 1.05s; top: 15px; font-size: 40px;">🦆</div>
+</div>
+""", unsafe_allow_html=True)
 
-                supabase.table("hunts").insert(data).execute()
-                st.success("✅ Hunt submitted successfully!")
+                # Clear auto-fill values after successful submit so next entry starts fresh
+                for key in ["auto_river_level", "auto_wind", "auto_temp_high", "auto_temp_low"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+            except Exception as e:
+                st.error(f"Save failed: {e}")
 
-                # mark that we just submitted so we can reset species values before widget creation next run
-                st.session_state["just_submitted"] = True
+    # ========== WILDLIFE SURVEY ==========
+    elif page == "Wildlife Survey":
+        if not is_admin:
+            st.warning("🔒 Viewer mode — you can view surveys but not submit.")
+            st.stop()
+
+        st.title("🦌 Wildlife Survey")
+        st.caption("Quick scouting log — tap what you saw, no counts required. Separate from harvest reports.")
+
+        with st.form("wildlife_survey_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                survey_date = st.date_input("Date", value=date.today(), key="survey_date")
+            with c2:
+                location = location_picker(
+                    label="Location *",
+                    key_prefix="survey_loc",
+                    options=WILDLIFE_LOCATION_OPTIONS,
+                )
+
+            observers = st.text_input("Who was out (optional)", placeholder="Jeff, Adam…")
+
+            st.subheader("What did you see?")
+            st.caption("Same ducks as Submit Report, plus deer & turkey. Check anything that showed — totals don't matter.")
+            ducks = st.multiselect("Ducks / geese", SPECIES, key="survey_ducks")
+            big = st.multiselect("Big game", ["Deer", "Turkey"], key="survey_big")
+            other_raw = st.text_input(
+                "Other species (optional)",
+                placeholder="Coyote, eagle, beaver… comma-separated",
+                key="survey_other",
+            )
+            notes = st.text_area("Notes (optional)", height=80, placeholder="Activity, wind, anything worth remembering…")
+
+            submitted = st.form_submit_button("✅ SAVE SURVEY", use_container_width=True, type="primary")
+
+        if submitted:
+            other_list = [x.strip() for x in other_raw.split(",") if x.strip()]
+            species_list = list(ducks) + list(big) + other_list
+            # No required counts — blank sighting list is fine; only location is required
+            if not location:
+                st.error("Pick a location (or Other and type one).")
+            else:
+                try:
+                    sid = add_wildlife_survey(
+                        survey_date=survey_date.isoformat(),
+                        location=location,
+                        species_list=species_list,
+                        observers=observers,
+                        notes=notes,
+                        created_by=st.session_state.username,
+                    )
+                    seen = ", ".join(species_list) if species_list else "nothing tagged"
+                    st.success(f"Survey #{sid} saved — {location}: {seen}")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+
+        st.divider()
+        st.subheader("Recent surveys")
+        sdf = get_all_wildlife_surveys_df()
+        if sdf.empty:
+            st.info("No wildlife surveys yet.")
+        else:
+            show = sdf[["id", "survey_date", "location", "species_seen", "observers", "notes"]].copy()
+            show.columns = ["ID", "Date", "Location", "Seen", "Who", "Notes"]
+            st.dataframe(show, use_container_width=True, hide_index=True)
+            if is_admin and not sdf.empty:
+                del_id = st.selectbox(
+                    "Delete a survey",
+                    [None] + sdf["id"].tolist(),
+                    format_func=lambda x: "—" if x is None else f"#{x} • {sdf[sdf.id==x].survey_date.values[0]} • {sdf[sdf.id==x].location.values[0]}",
+                )
+                if del_id and st.button("🗑️ Delete selected survey", type="secondary"):
+                    delete_wildlife_survey(int(del_id))
+                    st.success(f"Deleted survey #{del_id}")
+                    st.rerun()
+
+    # ========== HISTORY ==========
+    elif page == "View Hunt History":
+        st.title("📜 Hunt History")
+        st.caption("Browse, search, edit, or delete entries. Photos appear in the details view.")
+
+        df = get_all_hunts_df()
+        if df.empty:
+            st.info("No hunts logged yet.")
+            return
+
+        # Filters
+        with st.expander("🔍 Filters"):
+            seasons = ["All"] + sorted(df["season"].dropna().unique().tolist(), reverse=True)
+            sf = st.selectbox("Season", seasons, index=0)
+            loc_q = st.text_input("Location contains...")
+            if sf != "All":
+                df = df[df["season"] == sf]
+            if loc_q:
+                df = df[df["location"].str.contains(loc_q, case=False, na=False)]
+
+        display_cols = ["id", "date", "season", "location", "daily_total", "hunters", "wind", "river_level"]
+        disp = df[display_cols].copy()
+        disp.columns = ["ID", "Date", "Season", "Location", "Ducks", "Hunters", "Wind", "River"]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+        csv = df.to_csv(index=False)
+        st.download_button("⬇️ Download CSV", csv, f"hunt_log_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+
+        st.divider()
+        st.subheader("🔧 Manage Selected Hunt")
+
+        if not df.empty:
+            sel_id = st.selectbox("Select Hunt", df["id"].tolist(),
+                                  format_func=lambda x: f"#{x} • {df[df.id==x].date.values[0]} • {df[df.id==x].location.values[0] or 'No loc'} ({int(df[df.id==x].daily_total.values[0])} ducks)")
+
+            if sel_id:
+                details = get_hunt_details(sel_id)
+                photos = get_hunt_photos(sel_id)
+
+                tab1, tab2, tab3 = st.tabs(["📋 Details & Photos", "✏️ Edit", "🗑️ Delete"])
+
+                with tab1:
+                    st.markdown(f"**Hunt #{sel_id}** — {details.get('date')} ({details.get('season', 'N/A')})")
+                    st.write(f"**Location:** {details.get('location') or '—'}")
+                    st.write(f"**Weather:** {details.get('wind') or '—'} | High {details.get('temp_high')}° / Low {details.get('temp_low')}° | River: {details.get('river_level') or '—'}")
+                    st.write(f"**Hunters:** {', '.join(details.get('hunters', [])) or '—'}")
+                    if details.get("notes"):
+                        st.info(details["notes"])
+
+                    if photos:
+                        st.subheader("📷 Photos from this hunt")
+                        cols = st.columns(min(3, len(photos)))
+                        for idx, ph in enumerate(photos):
+                            with cols[idx % 3]:
+                                if Path(ph["full_path"]).exists():
+                                    st.image(ph["full_path"], caption=ph["caption"] or ph["filename"][:30], width=180)
+                                if is_admin and st.button(f"🗑️ Delete photo #{ph['id']}", key=f"delph_{ph['id']}"):
+                                    delete_photo(ph["id"])
+                                    st.rerun()
+
+                with tab2:
+                    if not is_admin:
+                        st.warning("Viewers cannot edit.")
+                    else:
+                        with st.form(f"edit_{sel_id}"):
+                            e_date = st.date_input("Date", value=datetime.strptime(details["date"], "%Y-%m-%d").date())
+                            e_loc = location_picker(
+                                label="Location *",
+                                current=details.get("location") or "",
+                                key_prefix=f"edit_loc_{sel_id}",
+                            )
+                            e_wind = st.text_input("Wind", value=details.get("wind") or "")
+                            ec1, ec2, ec3 = st.columns(3)
+                            with ec1: e_high = st.number_input("High °F", value=details.get("temp_high") or 50)
+                            with ec2: e_low = st.number_input("Low °F", value=details.get("temp_low") or 35)
+                            with ec3: e_river = st.text_input("River Level", value=details.get("river_level") or "")
+                            e_hunters = st.text_area("Hunters (one per line)", value="\n".join(details.get("hunters", [])), height=70)
+                            e_notes = st.text_area("Notes", value=details.get("notes") or "", height=80)
+
+                            st.subheader("Species Counts")
+                            curr_counts = {sp: details.get(SPECIES_COLS[sp], 0) for sp in SPECIES}
+                            e_counts = render_species_input_grid(defaults=curr_counts, key_prefix=f"edit_{sel_id}")
+
+                            st.subheader("Add more photos (optional)")
+                            new_photos = st.file_uploader("New photos", type=["jpg","png"], accept_multiple_files=True, key=f"newph_{sel_id}")
+                            new_caps = []
+                            if new_photos:
+                                for i, p in enumerate(new_photos):
+                                    new_caps.append(st.text_input(f"Caption for {p.name}", key=f"newcap_{sel_id}_{i}"))
+
+                            if st.form_submit_button("💾 Save Changes"):
+                                e_h_list = [h.strip() for h in e_hunters.split("\n") if h.strip()]
+                                if not e_loc:
+                                    st.error("Location is required — pick a spot or choose Other and type one.")
+                                    st.stop()
+                                edit_data = {
+                                    "date": e_date.isoformat(), "location": e_loc, "wind": e_wind.strip(),
+                                    "temp_high": int(e_high), "temp_low": int(e_low),
+                                    "river_level": e_river.strip(), "notes": e_notes.strip()
+                                }
+                                for sp in SPECIES:
+                                    edit_data[SPECIES_COLS[sp]] = e_counts.get(sp, 0)
+                                try:
+                                    update_hunt(sel_id, edit_data, e_h_list)
+                                    if new_photos:
+                                        add_photos_to_hunt(sel_id, new_photos, new_caps)
+                                    st.success("Updated!")
+                                    st.rerun()
+                                except Exception as ex:
+                                    st.error(f"Update error: {ex}")
+
+                with tab3:
+                    if not is_admin:
+                        st.warning("Viewers cannot delete.")
+                    else:
+                        st.error("Permanent delete!")
+                        if st.checkbox(f"Confirm delete Hunt #{sel_id} and all its photos"):
+                            if st.button("🗑️ DELETE HUNT", type="secondary"):
+                                delete_hunt(sel_id)
+                                st.success("Deleted.")
+                                st.rerun()
+
+    # ========== ANALYTICS ==========
+    elif page == "Season Analytics":
+        st.title("📈 Season Analytics & Trends")
+        df = get_all_hunts_df()
+        if df.empty:
+            st.info("Add hunts to see trends.")
+            return
+
+        seasons = ["All"] + sorted(df["season"].dropna().unique().tolist(), reverse=True)
+        sel_season = st.selectbox("Season", seasons, index=0)
+        if sel_season != "All":
+            df = df[df["season"] == sel_season]
+
+        st.subheader("Daily Bag Trend")
+        df_sorted = df.sort_values("date")
+        fig = px.line(df_sorted, x="date", y="daily_total", markers=True, hover_data=["location"],
+                      title="Ducks per Hunt Day")
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("🏆 Top 5 Days")
+        top = df.nlargest(5, "daily_total")[["date", "location", "daily_total", "hunters"]].copy()
+        top["date"] = pd.to_datetime(top["date"]).dt.strftime("%b. %d")
+        st.dataframe(top, hide_index=True, use_container_width=True)
+
+        st.subheader("Weekly Totals")
+        df_sorted["week_start"] = df_sorted["date"] - pd.to_timedelta(df_sorted["date"].dt.dayofweek, unit="D")
+        weekly = df_sorted.groupby("week_start")["daily_total"].sum().reset_index()
+        weekly = weekly.sort_values("week_start")
+        weekly["Week"] = weekly["week_start"].dt.strftime("Week of %b %d")
+        fig_bar = px.bar(weekly, x="Week", y="daily_total", text_auto=True, title="Ducks by Week")
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ========== REPORTS ==========
+    elif page == "Reports & Exports":
+        st.title("📊 Reports & Exports")
+        st.caption("Generate professional summaries for the club or export data for eBird.")
+
+        df = get_all_hunts_df()
+        if df.empty:
+            st.info("No data for reports yet.")
+            return
+
+        seasons = ["All"] + sorted(df["season"].dropna().unique().tolist(), reverse=True)
+        sel_s = st.selectbox("Season for report", seasons, index=0)
+        if sel_s != "All":
+            df = df[df["season"] == sel_s]
+
+        period_label = sel_s if sel_s != "All" else "All Seasons"
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("📄 Generate PDF Club Report", use_container_width=True):
+                species_tot = {sp: int(df[SPECIES_COLS[sp]].sum()) for sp in SPECIES}
+                pdf_path = BASE_DIR / f"DD_Lodge_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+                generate_pdf_report(period_label, df, species_tot, pdf_path)
+                with open(pdf_path, "rb") as f:
+                    st.download_button("⬇️ Download PDF", f.read(), pdf_path.name, "application/pdf", use_container_width=True)
+
+        with c2:
+            if st.button("🐦 Export eBird-style Checklist CSV", use_container_width=True):
+                lines = ["Common Name,Count,Date,Location,Protocol,Notes\n"]
+                for _, r in df.iterrows():
+                    for sp in SPECIES:
+                        cnt = r.get(SPECIES_COLS[sp], 0)
+                        if cnt > 0:
+                            lines.append(f'"{sp}",{cnt},{r["date"]},"{r.get("location","")}","Stationary","From DD Lodge hunt log"\n')
+                csv_text = "".join(lines)
+                st.download_button("⬇️ Download eBird CSV", csv_text, "dd_lodge_ebird_checklist.csv", "text/csv", use_container_width=True)
+
+        st.info("**eBird tip:** The CSV is formatted for easy import into eBird. Adjust 'Protocol' or add exact location coordinates as needed before uploading.")
+
+        st.subheader("Quick Period Stats")
+        if not df.empty:
+            st.metric("Ducks in Selected Period", int(df["daily_total"].sum()))
+            st.metric("Hunts", len(df))
+
+    # ========== MANAGE ==========
+    elif page == "Manage Data":
+        if not is_admin:
+            st.warning("🔒 Admin access required for data management.")
+            st.stop()
+
+        st.title("⚙️ Manage Data")
+        st.subheader("Demo Data")
+        if st.button("🧪 Load Sample Data (resets if exists)"):
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM hunt_photos")
+            c.execute("DELETE FROM hunt_hunters")
+            c.execute("DELETE FROM hunts")
+            conn.commit()
+            conn.close()
+            for f in UPLOAD_DIR.glob("*"):
+                try: f.unlink()
+                except: pass
+            if load_sample_data():
+                st.success("Sample data loaded with 4 hunts!")
+            st.rerun()
+
+        st.subheader("Danger Zone")
+        if st.button("🗑️ Clear ALL Data (keeps tables)"):
+            if st.checkbox("Type YES to confirm"):
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("DELETE FROM hunt_photos")
+                c.execute("DELETE FROM hunt_hunters")
+                c.execute("DELETE FROM hunts")
+                conn.commit()
+                conn.close()
+                for f in UPLOAD_DIR.glob("*"):
+                    try: f.unlink()
+                    except: pass
+                st.success("All data cleared.")
                 st.rerun()
 
-            except Exception as e:
-                logger.error(f"Submit hunt error: {str(e)}")
-                st.error(f"❌ Error submitting hunt: {str(e)}")
+        st.subheader("Backup")
+        st.code(f"Database: {DB_PATH}\nUploads folder: {UPLOAD_DIR}")
+        st.info("Copy the entire duck_hunt_tracker folder (including uploads/ and .db) to backup or share with club members. All photos and data travel together.")
 
-# ==================== TAB 3: HUNT HISTORY ====================
-with tab3:
-    st.header("Hunt History")
-    
-    try:
-        response = supabase.table("hunts").select("*").order("date", desc=True).execute()
-        
-        if response.data:
-            df = pd.DataFrame(response.data)
-            df["date"] = pd.to_datetime(df["date"])
-            
-            # Filters
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                date_range = st.date_input(
-                    "Date Range",
-                    value=(df["date"].min().date(), df["date"].max().date()),
-                    label_visibility="collapsed"
-                )
-                if isinstance(date_range, tuple) and len(date_range) == 2:
-                    start_date, end_date = date_range
-                    df = df[(df["date"].dt.date >= start_date) & (df["date"].dt.date <= end_date)]
-            
-            with col2:
-                locations = ["All"] + sorted(df["location"].unique().tolist())
-                selected_location = st.selectbox("Location", locations)
-                if selected_location != "All":
-                    df = df[df["location"] == selected_location]
-            
-            with col3:
-                search_hunter = st.text_input("Search Hunter", placeholder="Hunter name...")
-                if search_hunter:
-                    df = df[df["hunters"].str.contains(search_hunter, case=False, na=False)]
-            
-            st.divider()
-            
-            if len(df) > 0:
-                # Summary stats for filtered results
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Total Hunts", len(df))
-                col2.metric("Total Ducks", int(df[SPECIES].sum().sum()))
-                col3.metric("Avg per Hunt", int(df[SPECIES].sum().sum() / len(df)))
-                col4.metric("Top Location", df["location"].value_counts().index[0] if len(df) > 0 else "N/A")
-                
-                st.divider()
-                
-                # Detailed table
-                display_df = df.copy()
-                display_df["Date"] = display_df["date"].dt.strftime("%b %d, %Y")
-                display_df["Total"] = display_df[SPECIES].sum(axis=1)
-                
-                display_cols = ["Date", "location", "hunters", "Total", "high_temp", "low_temp", "rainfall", "river_level", "notes"]
-                display_df = display_df[display_cols].rename(columns={
-                    "location": "Location",
-                    "hunters": "Hunters",
-                    "high_temp": "High °F",
-                    "low_temp": "Low °F",
-                    "rainfall": "Rain (in)",
-                    "river_level": "River Level",
-                    "notes": "Notes"
-                })
-                
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-                
-                # Download button
-                csv = display_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download as CSV",
-                    data=csv,
-                    file_name=f"hunt_history_{date.today()}.csv",
-                    mime="text/csv"
-                )
-            else:
-                st.info("ℹ️ No hunts match your filters")
-        else:
-            st.info("ℹ️ No hunt history yet")
-    
-    except Exception as e:
-        logger.error(f"Hunt history error: {str(e)}")
-        st.error(f"❌ Error loading hunt history: {str(e)}")
+        st.subheader("About DD Hunt Tracker")
+        st.write("""
+        Built to replace paper logs with modern tracking, photos, reports, and role-based access.
 
-# ==================== TAB 4: SEASON ANALYTICS ====================
-with tab4:
-    st.header("Season Analytics")
-    
-    try:
-        response = supabase.table("hunts").select("*").execute()
-        
-        if response.data:
-            df = pd.DataFrame(response.data)
-            df["date"] = pd.to_datetime(df["date"])
-            
-            # ===== TOP STATS =====
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("🦆 Total Ducks", int(df[SPECIES].sum().sum()))
-            col2.metric("🎯 Total Hunts", len(df))
-            col3.metric("📊 Avg per Hunt", int(df[SPECIES].sum().sum() / len(df)) if len(df) > 0 else 0)
-            col4.metric("🏆 Best Hunt", int(df[SPECIES].sum(axis=1).max()))
-            
-            st.divider()
-            
-            # ===== CHARTS =====
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("🦆 Species Breakdown")
-                species_totals = df[SPECIES].sum().sort_values(ascending=False)
-                species_totals.index = species_totals.index.str.replace("_", " ").str.title()
-                chart_df = species_totals[species_totals > 0]
-                if len(chart_df) > 0:
-                    st.bar_chart(chart_df)
-                else:
-                    st.info("No data yet")
-            
-            with col2:
-                st.subheader("📈 Hunts Over Time")
-                # FIX: Sort by date and prepare data for ordered display
-                hunts_per_day = df.groupby(df["date"].dt.date).size().sort_index()
-                hunts_df = hunts_per_day.reset_index()
-                hunts_df.columns = ["Date", "Hunts"]
-                hunts_df["Date"] = pd.to_datetime(hunts_df["Date"])
-                
-                # Use Altair to maintain date order
-                chart = alt.Chart(hunts_df).mark_line(point=True).encode(
-                    x=alt.X("Date:T", title="Date"),
-                    y=alt.Y("Hunts:Q", title="Number of Hunts"),
-                    tooltip=["Date:T", "Hunts:Q"]
-                ).properties(width=500, height=300)
-                st.altair_chart(chart, use_container_width=True)
-            
-            st.divider()
-            
-            # ===== LOCATION STATS =====
-            st.subheader("📍 Location Performance")
-            location_stats = []
-            for location in df["location"].unique():
-                location_df = df[df["location"] == location]
-                location_stats.append({
-                    "Location": location,
-                    "Hunts": len(location_df),
-                    "Total Ducks": int(location_df[SPECIES].sum().sum()),
-                    "Avg per Hunt": int(location_df[SPECIES].sum().sum() / len(location_df)),
-                    "Best": int(location_df[SPECIES].sum(axis=1).max())
-                })
-            
-            if location_stats:
-                location_df_stats = pd.DataFrame(location_stats).sort_values("Total Ducks", ascending=False)
-                st.dataframe(location_df_stats, use_container_width=True, hide_index=True)
-            
-            st.divider()
-            
-            # ===== WEATHER CORRELATION WITH DATE RANGE =====
-            st.subheader("🌡️ Weather Insights")
-            min_date = df["date"].min().date()
-            max_date = df["date"].max().date()
-            col_range1, col_range2 = st.columns([2, 1])
-            with col_range1:
-                analytics_range = st.date_input(
-                    "Analytics date range",
-                    value=(min_date, max_date),
-                    help="Select a date range for the weekly species comparison"
-                )
-            # compute and display rainfall for selected range
-            if isinstance(analytics_range, tuple) and len(analytics_range) == 2:
-                start_date, end_date = analytics_range
-            else:
-                start_date, end_date = min_date, max_date
+        - Matches your original form fields exactly  
+        - Photos per hunt (birds, scenery, crew)  
+        - Automatic season detection & filtering (2025-2026 etc.)  
+        - Multi-user login (admin full control, viewer read-only)  
+        - PDF club reports + eBird export  
+        - Mobile-friendly PWA installable on phones/tablets  
+        - 100% private — everything stays in your shared folder
 
-            mask = (df["date"].dt.date >= start_date) & (df["date"].dt.date <= end_date)
-            df_range = df.loc[mask].copy()
+        Logo proudly displayed: DD Lodge Entrance Logo.
+        """)
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                avg_high = df_range["high_temp"].mean() if len(df_range) > 0 else None
-                st.metric("Avg High Temp", f"{int(avg_high)}°F" if avg_high is not None else "N/A")
-            with col2:
-                avg_low = df_range["low_temp"].mean() if len(df_range) > 0 else None
-                st.metric("Avg Low Temp", f"{int(avg_low)}°F" if avg_low is not None else "N/A")
-            with col3:
-                total_rain = df_range["rainfall"].sum() if len(df_range) > 0 else 0.0
-                st.metric("Rainfall", f"{total_rain:.2f} in", help=f"Rainfall from {start_date} → {end_date}")
 
-            st.divider()
-
-            # ===== WEEKLY SPECIES COMPARISON - LINE CHART + PIVOT TABLE =====
-            st.subheader("📅 Weekly Species Comparison")
-            if len(df_range) > 0:
-                # Add week column to df_range
-                df_range_copy = df_range.copy()
-                df_range_copy["week_start"] = df_range_copy["date"].dt.to_period("W").dt.start_time
-                df_range_copy = df_range_copy.sort_values("week_start")
-                
-                # Create pivot table: weeks as rows, species as columns
-                pivot_data = []
-                for week_start in sorted(df_range_copy["week_start"].unique()):
-                    week_df = df_range_copy[df_range_copy["week_start"] == week_start]
-                    week_label = week_start.strftime("%b %d")
-                    row = {"Week": week_label, "week_date": pd.Timestamp(week_start)}
-                    for species in SPECIES:
-                        row[species.replace("_", " ").title()] = int(week_df[species].sum())
-                    pivot_data.append(row)
-                
-                if pivot_data:
-                    pivot_df = pd.DataFrame(pivot_data)
-                    
-                    # === LINE CHART ===
-                    st.subheader("📈 Species Trends Over Weeks")
-                    
-                    # Convert to long format for line chart with proper date ordering
-                    line_data = []
-                    for idx, row in pivot_df.iterrows():
-                        week = row["Week"]
-                        week_date = pd.Timestamp(row["week_date"])
-                        for species in SPECIES:
-                            species_name = species.replace("_", " ").title()
-                            if species_name in row:
-                                count = row[species_name]
-                                if count > 0:  # Only include species with harvest
-                                    line_data.append({
-                                        "Week": week,
-                                        "week_date": week_date,
-                                        "Species": species_name,
-                                        "Count": int(count)
-                                    })
-                    
-                    if line_data:
-                        line_df = pd.DataFrame(line_data)
-                        # Ensure week_date is datetime type
-                        line_df["week_date"] = pd.to_datetime(line_df["week_date"])
-                        
-                        # Create line chart with Altair using temporal date encoding for proper ordering
-                        chart = alt.Chart(line_df).mark_line(point=True).encode(
-                            x=alt.X("week_date:T", title="Week", axis=alt.Axis(labelAngle=45, format="%b %d")),
-                            y=alt.Y("Count:Q", title="Harvest Count"),
-                            color=alt.Color("Species:N", title="Species", scale=alt.Scale(scheme="category10")),
-                            tooltip=["Week:N", "Species:N", "Count:Q"]
-                        ).properties(
-                            width=800,
-                            height=400
-                        ).interactive()
-                        
-                        st.altair_chart(chart, use_container_width=True)
-                    else:
-                        st.info("No species with harvest in this range")
-                    
-                    # === PIVOT TABLE ===
-                    st.subheader("📊 Weekly Harvest Data (Pivot Table)")
-                    
-                    # Display table with weeks in order (drop the helper column)
-                    display_pivot = pivot_df.drop(columns=["week_date"])
-                    
-                    # Reorder columns: Week first, then species columns
-                    species_cols = [s.replace("_", " ").title() for s in SPECIES]
-                    display_cols = ["Week"] + [col for col in species_cols if col in display_pivot.columns]
-                    pivot_display = display_pivot[display_cols]
-                    
-                    st.dataframe(pivot_display, use_container_width=True, hide_index=True)
-                    
-                else:
-                    st.info("No species data in this range")
-            else:
-                st.info("No data in selected range")
-        
-        else:
-            st.info("ℹ️ No hunt data available yet. Submit some hunts to see analytics!")
-    
-    except Exception as e:
-        logger.error(f"Analytics error: {str(e)}")
-        st.error(f"❌ Error loading analytics: {str(e)}")
-
-# ==================== TAB 5: EDIT HUNTS ====================
-with tab5:
-    st.header("Edit Hunts")
-    
-    try:
-        response = supabase.table("hunts").select("*").order("date", desc=True).execute()
-        
-        if response.data:
-            df = pd.DataFrame(response.data)
-            df["date"] = pd.to_datetime(df["date"])
-            
-            # Select hunt to edit
-            hunt_dates = df.sort_values("date", ascending=False)
-            hunt_options = [f"{row['date'].strftime('%b %d, %Y')} - {row['location']}" for _, row in hunt_dates.iterrows()]
-            selected_hunt_idx = st.selectbox("Select Hunt to Edit", range(len(hunt_options)), format_func=lambda x: hunt_options[x])
-            
-            selected_hunt = hunt_dates.iloc[selected_hunt_idx]
-            hunt_id = selected_hunt.get("id")
-            
-            st.divider()
-            st.subheader(f"Editing: {selected_hunt['date'].strftime('%b %d, %Y')} - {selected_hunt['location']}")
-            
-            with st.form("edit_hunt"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    location = st.text_input("Location / Blind", value=selected_hunt.get("location", ""))
-                    wind = st.text_input("Wind", value=selected_hunt.get("wind", ""))
-                    high_temp = st.number_input("High °F", value=int(selected_hunt.get("high_temp", 55)), min_value=-20, max_value=120)
-                    low_temp = st.number_input("Low °F", value=int(selected_hunt.get("low_temp", 40)), min_value=-20, max_value=120)
-                
-                with col2:
-                    river_level = st.text_input("River Level", value=selected_hunt.get("river_level", ""))
-                    rainfall = st.number_input("Rainfall (inches)", value=float(selected_hunt.get("rainfall", 0.0)), step=0.1, min_value=0.0)
-                    hunters = st.text_area("Hunters (one per line)", value=selected_hunt.get("hunters", ""))
-                    notes = st.text_area("Notes", value=selected_hunt.get("notes", ""))
-                
-                st.subheader("Species Harvested")
-                
-                col1, col2, col3 = st.columns(3)
-                species_counts = {}
-                
-                with col1:
-                    species_counts["mallard"] = st.number_input("Mallard", value=int(selected_hunt.get("mallard", 0)), min_value=0, key="edit_mallard")
-                    species_counts["gadwall"] = st.number_input("Gadwall", value=int(selected_hunt.get("gadwall", 0)), min_value=0, key="edit_gadwall")
-                    species_counts["teal"] = st.number_input("Teal", value=int(selected_hunt.get("teal", 0)), min_value=0, key="edit_teal")
-                    species_counts["pintail"] = st.number_input("Pintail", value=int(selected_hunt.get("pintail", 0)), min_value=0, key="edit_pintail")
-                
-                with col2:
-                    species_counts["wood_duck"] = st.number_input("Wood Duck", value=int(selected_hunt.get("wood_duck", 0)), min_value=0, key="edit_wood_duck")
-                    species_counts["widgeon"] = st.number_input("Widgeon", value=int(selected_hunt.get("widgeon", 0)), min_value=0, key="edit_widgeon")
-                    species_counts["shoveler"] = st.number_input("Shoveler", value=int(selected_hunt.get("shoveler", 0)), min_value=0, key="edit_shoveler")
-                    species_counts["canvasback"] = st.number_input("Canvasback", value=int(selected_hunt.get("canvasback", 0)), min_value=0, key="edit_canvasback")
-                
-                with col3:
-                    species_counts["redhead"] = st.number_input("Redhead", value=int(selected_hunt.get("redhead", 0)), min_value=0, key="edit_redhead")
-                    species_counts["divers"] = st.number_input("Divers", value=int(selected_hunt.get("divers", 0)), min_value=0, key="edit_divers")
-                    species_counts["geese"] = st.number_input("Geese", value=int(selected_hunt.get("geese", 0)), min_value=0, key="edit_geese")
-                
-                st.divider()
-                
-                col_save, col_delete = st.columns(2)
-                
-                with col_save:
-                    if st.form_submit_button("💾 Save Changes", use_container_width=True):
-                        try:
-                            update_data = {
-                                "location": location,
-                                "wind": wind,
-                                "high_temp": int(high_temp),
-                                "low_temp": int(low_temp),
-                                "river_level": river_level,
-                                "rainfall": float(rainfall),
-                                "hunters": hunters,
-                                "notes": notes,
-                                **species_counts
-                            }
-                            supabase.table("hunts").update(update_data).eq("id", hunt_id).execute()
-                            st.success("✅ Hunt updated successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            logger.error(f"Update hunt error: {str(e)}")
-                            st.error(f"❌ Error updating hunt: {str(e)}")
-                
-                with col_delete:
-                    if st.form_submit_button("🗑️ Delete Hunt", use_container_width=True, help="Delete this hunt record"):
-                        try:
-                            supabase.table("hunts").delete().eq("id", hunt_id).execute()
-                            st.success("✅ Hunt deleted successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            logger.error(f"Delete hunt error: {str(e)}")
-                            st.error(f"❌ Error deleting hunt: {str(e)}")
-        
-        else:
-            st.info("ℹ️ No hunts to edit yet")
-    
-    except Exception as e:
-        logger.error(f"Edit hunts error: {str(e)}")
-        st.error(f"❌ Error loading hunts: {str(e)}")
-
-# ==================== FOOTER ====================
-st.divider()
-st.caption("🦆 DD Hunt Tracker v2.0 | Built with ❤️ for duck hunting season 2025-2026")
+if __name__ == "__main__":
+    main()
