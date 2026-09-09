@@ -104,6 +104,105 @@ def location_picker(label="Location / Blind *", current=None, key_prefix="loc", 
 CLUB_NAME = "DD"
 APP_TITLE = f"🦆 {CLUB_NAME} Hunt Tracker"
 
+# Supabase column names (species without _count; temps as high_temp/low_temp)
+SPECIES_SB_COLS = {sp: sp.lower().replace(" ", "_") for sp in SPECIES}
+
+
+def _supabase_env():
+    """Return (url, key) if configured, else (None, None). Never log the key."""
+    url = (os.environ.get("SUPABASE_URL") or "").strip()
+    key = (os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_ANON_KEY") or "").strip()
+    if url and key:
+        return url, key
+    return None, None
+
+
+def use_supabase() -> bool:
+    url, key = _supabase_env()
+    return bool(url and key)
+
+
+def get_supabase_client():
+    """Lazy Supabase client when env is set."""
+    from supabase import create_client
+    url, key = _supabase_env()
+    if not url or not key:
+        raise RuntimeError("Supabase env not configured")
+    return create_client(url, key)
+
+
+def _parse_hunters_field(raw) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(h).strip() for h in raw if str(h).strip()]
+    text = str(raw).replace("\r\n", "\n").replace("\r", "\n")
+    # Support newline-separated (Supabase) or " | " joined (legacy display)
+    if "\n" in text:
+        parts = text.split("\n")
+    elif " | " in text:
+        parts = text.split(" | ")
+    else:
+        parts = [text] if text.strip() else []
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _hunters_to_sb(hunters: list[str]) -> str:
+    return "\n".join(h.strip() for h in hunters if h and h.strip())
+
+
+def _sb_row_to_app(row: dict, hunters_as_list: bool = False) -> dict:
+    """Map a Supabase hunts row to the app's sqlite-shaped dict."""
+    if not row:
+        return {}
+    out = {
+        "id": row.get("id"),
+        "date": row.get("date"),
+        "location": row.get("location"),
+        "wind": row.get("wind"),
+        "temp_high": row.get("high_temp"),
+        "temp_low": row.get("low_temp"),
+        "river_level": row.get("river_level"),
+        "rainfall": row.get("rainfall") if row.get("rainfall") is not None else 0,
+        "notes": row.get("notes"),
+        "season": row.get("season"),
+        "created_at": row.get("created_at"),
+        "created_by": row.get("created_by"),
+    }
+    for sp in SPECIES:
+        sb_col = SPECIES_SB_COLS[sp]
+        app_col = SPECIES_COLS[sp]
+        val = row.get(sb_col)
+        out[app_col] = int(val or 0)
+    hunters_list = _parse_hunters_field(row.get("hunters"))
+    if hunters_as_list:
+        out["hunters"] = hunters_list
+    else:
+        out["hunters"] = " | ".join(hunters_list)
+    count_cols = list(SPECIES_COLS.values())
+    out["daily_total"] = int(sum(out.get(c, 0) or 0 for c in count_cols))
+    return out
+
+
+def _app_data_to_sb(data: dict, hunters: list[str] | None = None) -> dict:
+    """Map app hunt dict (+ optional hunters list) to Supabase insert/update payload."""
+    payload = {
+        "date": data.get("date"),
+        "location": data.get("location"),
+        "wind": data.get("wind"),
+        "high_temp": data.get("temp_high"),
+        "low_temp": data.get("temp_low"),
+        "river_level": data.get("river_level"),
+        "rainfall": data.get("rainfall", 0.0),
+        "notes": data.get("notes"),
+        "season": data.get("season"),
+    }
+    for sp in SPECIES:
+        payload[SPECIES_SB_COLS[sp]] = int(data.get(SPECIES_COLS[sp], 0) or 0)
+    if hunters is not None:
+        payload["hunters"] = _hunters_to_sb(hunters)
+    return payload
+
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -224,6 +323,22 @@ def init_db():
 
 def get_all_hunts_df(season_filter: str | None = None) -> pd.DataFrame:
     """Return hunts with daily_total, hunters, and optional season filter."""
+    if use_supabase():
+        client = get_supabase_client()
+        resp = client.table("hunts").select("*").order("date", desc=True).order("id", desc=True).execute()
+        rows = resp.data or []
+        if not rows:
+            return pd.DataFrame()
+        mapped = [_sb_row_to_app(r, hunters_as_list=False) for r in rows]
+        df = pd.DataFrame(mapped)
+        if "season" not in df.columns or df["season"].isna().all():
+            df["season"] = df["date"].apply(
+                lambda x: get_season_from_date(datetime.strptime(str(x)[:10], "%Y-%m-%d").date())
+            )
+        if season_filter and season_filter != "All":
+            df = df[df["season"] == season_filter]
+        return df
+
     conn = get_db_connection()
     query = """
         SELECT 
@@ -256,12 +371,20 @@ def get_all_hunts_df(season_filter: str | None = None) -> pd.DataFrame:
 
 def add_hunt(data: dict, hunters: list[str]) -> int:
     """Insert hunt + hunters. Auto-computes season if missing."""
-    conn = get_db_connection()
-    c = conn.cursor()
-
     if "season" not in data or not data.get("season"):
         d = datetime.fromisoformat(data["date"]).date()
         data["season"] = get_season_from_date(d)
+
+    if use_supabase():
+        client = get_supabase_client()
+        payload = _app_data_to_sb(data, hunters)
+        resp = client.table("hunts").insert(payload).execute()
+        if not resp.data:
+            raise RuntimeError("Supabase insert returned no row")
+        return int(resp.data[0]["id"])
+
+    conn = get_db_connection()
+    c = conn.cursor()
 
     count_cols = list(SPECIES_COLS.values())
     all_cols = ["date", "location", "wind", "temp_high", "temp_low", "river_level", "rainfall", "notes", "season"] + count_cols
@@ -291,6 +414,14 @@ def add_hunt(data: dict, hunters: list[str]) -> int:
 
 
 def get_hunt_details(hunt_id: int) -> dict:
+    if use_supabase():
+        client = get_supabase_client()
+        resp = client.table("hunts").select("*").eq("id", hunt_id).limit(1).execute()
+        rows = resp.data or []
+        if not rows:
+            return {}
+        return _sb_row_to_app(rows[0], hunters_as_list=True)
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT * FROM hunts WHERE id = ?", (hunt_id,))
@@ -308,15 +439,21 @@ def get_hunt_details(hunt_id: int) -> dict:
 
 
 def update_hunt(hunt_id: int, data: dict, hunters: list[str]):
-    conn = get_db_connection()
-    c = conn.cursor()
-
     if "season" not in data or not data.get("season"):
         d = datetime.fromisoformat(data["date"]).date()
         data["season"] = get_season_from_date(d)
 
+    if use_supabase():
+        client = get_supabase_client()
+        payload = _app_data_to_sb(data, hunters)
+        client.table("hunts").update(payload).eq("id", hunt_id).execute()
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
     count_cols = list(SPECIES_COLS.values())
-    set_cols = ["date", "location", "wind", "temp_high", "temp_low", "river_level", "notes", "season"] + count_cols
+    set_cols = ["date", "location", "wind", "temp_high", "temp_low", "river_level", "rainfall", "notes", "season"] + count_cols
     set_clause = ", ".join([f"{col} = ?" for col in set_cols])
 
     values = [
@@ -342,16 +479,28 @@ def update_hunt(hunt_id: int, data: dict, hunters: list[str]):
 
 
 def delete_hunt(hunt_id: int):
+    # Always try to clean local photo files / sqlite photo rows
     conn = get_db_connection()
     c = conn.cursor()
-    # Photos and files cleaned by cascade + manual
     c.execute("SELECT filename FROM hunt_photos WHERE hunt_id = ?", (hunt_id,))
     for row in c.fetchall():
         try:
             (UPLOAD_DIR / row[0]).unlink(missing_ok=True)
-        except:
+        except Exception:
             pass
     c.execute("DELETE FROM hunt_photos WHERE hunt_id = ?", (hunt_id,))
+    conn.commit()
+
+    if use_supabase():
+        conn.close()
+        client = get_supabase_client()
+        try:
+            client.table("hunts").delete().eq("id", hunt_id).execute()
+        except Exception as ex:
+            # RLS may block anon delete — keep trying surface and re-raise
+            raise RuntimeError(f"Supabase delete failed (RLS may block anon delete): {ex}") from ex
+        return
+
     c.execute("DELETE FROM hunt_hunters WHERE hunt_id = ?", (hunt_id,))
     c.execute("DELETE FROM hunts WHERE id = ?", (hunt_id,))
     conn.commit()
