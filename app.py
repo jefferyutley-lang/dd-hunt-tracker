@@ -58,11 +58,42 @@ WILDLIFE_LOCATION_OPTIONS = [
     "Bar Pit",
     "Black Bayou",
     "Pool 1",
-    "North Plot",
+    "North Deer/Turkey Plot",
     "Bayou Plot",
     "Sunflower Patch",
     "Other...",
 ]
+
+# Farm Plans locations (order matters for UI). No "Other...".
+FARM_PLAN_LOCATIONS = [
+    "Bar Pit",
+    "North Deer/Turkey Plot",
+    "Money",
+    "Pool 1",
+    "Willow",
+    "Refuge",
+    "Black Bayou",
+    "Bayou Plot",
+    "South Block",
+    "Sunflower Patch",
+]
+
+# Location display name -> cutout PNG under farm_maps/
+# Schematic Field cutouts only (white outline). Bar Pit has no schematic piece.
+# Field numbers are GUESSED from layout — Jeff will correct.
+FARM_PLAN_MAP_FILES = {
+    "Bar Pit": "Bar_Pit.png",  # sketched from satellite (includes island)
+    "North Deer/Turkey Plot": "North_Deer_Turkey_Plot.png",  # Field 1 guess
+    "Money": "Money.png",  # Field 2 guess
+    "Pool 1": "Pool_1.png",  # Field 11 guess
+    "Willow": "Willow.png",  # Field 3 guess
+    "Refuge": "Refuge.png",  # Field 4 guess
+    "Black Bayou": "Black_Bayou.png",  # Field 7 guess
+    "Bayou Plot": "Bayou_Plot.png",  # Field 10 guess
+    "South Block": "South_Block.png",  # Field 9 guess
+    "Sunflower Patch": "Sunflower_Patch.png",  # Field 8 guess
+}
+FARM_MAPS_DIR = BASE_DIR / "farm_maps"
 
 # Wildlife Survey: same ducks as Submit Report + deer/turkey. Presence only — no counts.
 WILDLIFE_PRESET_SPECIES = SPECIES + ["Deer", "Turkey"]
@@ -303,6 +334,19 @@ def init_db():
             survey_id INTEGER NOT NULL,
             species TEXT NOT NULL,
             FOREIGN KEY (survey_id) REFERENCES wildlife_surveys(id) ON DELETE CASCADE
+        )
+    """)
+
+    # Farm plans — yearly notes per location (SQLite fallback)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS farm_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER NOT NULL,
+            location TEXT NOT NULL,
+            notes TEXT DEFAULT '',
+            updated_by TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(year, location)
         )
     """)
 
@@ -973,6 +1017,125 @@ def delete_wildlife_survey(survey_id: int):
     conn.close()
 
 
+def get_farm_plan(year: int, location: str) -> str:
+    """Return notes for a single year+location farm plan (empty string if none)."""
+    year = int(year)
+    location = (location or "").strip()
+    if use_supabase():
+        client = get_supabase_client()
+        resp = (
+            client.table("farm_plans")
+            .select("notes")
+            .eq("year", year)
+            .eq("location", location)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return ""
+        return (rows[0].get("notes") or "") if isinstance(rows[0], dict) else ""
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT notes FROM farm_plans WHERE year = ? AND location = ?",
+        (year, location),
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return ""
+    return row[0] or ""
+
+
+def get_farm_plans_for_year(year: int) -> dict:
+    """Return {location: notes} for all farm plans in a year."""
+    year = int(year)
+    if use_supabase():
+        client = get_supabase_client()
+        resp = (
+            client.table("farm_plans")
+            .select("location, notes")
+            .eq("year", year)
+            .execute()
+        )
+        rows = resp.data or []
+        out = {}
+        for r in rows:
+            loc = (r.get("location") or "").strip()
+            if loc:
+                out[loc] = r.get("notes") or ""
+        return out
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT location, notes FROM farm_plans WHERE year = ?", (year,))
+    out = {row[0]: (row[1] or "") for row in c.fetchall()}
+    conn.close()
+    return out
+
+
+def upsert_farm_plan(year: int, location: str, notes: str, updated_by: str = ""):
+    """Insert or update farm plan notes for year+location."""
+    year = int(year)
+    location = (location or "").strip()
+    notes = notes if notes is not None else ""
+    updated_by = updated_by or ""
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    if use_supabase():
+        client = get_supabase_client()
+        payload = {
+            "year": year,
+            "location": location,
+            "notes": notes,
+            "updated_by": updated_by,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        try:
+            client.table("farm_plans").upsert(payload, on_conflict="year,location").execute()
+            return
+        except Exception:
+            # Fallback: select then update/insert
+            existing = (
+                client.table("farm_plans")
+                .select("id")
+                .eq("year", year)
+                .eq("location", location)
+                .limit(1)
+                .execute()
+            )
+            rows = existing.data or []
+            if rows:
+                client.table("farm_plans").update(
+                    {
+                        "notes": notes,
+                        "updated_by": updated_by,
+                        "updated_at": datetime.utcnow().isoformat() + "Z",
+                    }
+                ).eq("year", year).eq("location", location).execute()
+            else:
+                client.table("farm_plans").insert(payload).execute()
+            return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO farm_plans (year, location, notes, updated_by, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(year, location) DO UPDATE SET
+            notes = excluded.notes,
+            updated_by = excluded.updated_by,
+            updated_at = excluded.updated_at
+        """,
+        (year, location, notes, updated_by, now),
+    )
+    conn.commit()
+    conn.close()
+
+
 # ---------------- LOGIN SYSTEM ----------------
 def show_login():
     # Professional centered logo + title
@@ -1043,7 +1206,7 @@ def main():
 
     # Sidebar
     st.sidebar.title("🦆 Navigation")
-    pages = ["Dashboard", "Submit Daily Report", "Wildlife Survey", "View Hunt History", "Season Analytics", "Reports & Exports", "Manage Data"]
+    pages = ["Dashboard", "Submit Daily Report", "Wildlife Survey", "Farm Plans", "View Hunt History", "Season Analytics", "Reports & Exports", "Manage Data"]
     page = st.sidebar.radio("Go to", pages, index=0)
 
     st.sidebar.divider()
@@ -1353,6 +1516,63 @@ def main():
                     delete_wildlife_survey(int(del_id))
                     st.success(f"Deleted survey #{del_id}")
                     st.rerun()
+
+    # ========== FARM PLANS ==========
+    elif page == "Farm Plans":
+        st.title("🗺️ Farm Plans")
+        st.caption("Yearly notes per spot — planting, water, food plots, and what to remember.")
+
+        year = st.number_input(
+            "Year",
+            min_value=2000,
+            max_value=2100,
+            value=datetime.now().year,
+            step=1,
+            key="farm_plan_year",
+        )
+        year = int(year)
+
+        overview_path = FARM_MAPS_DIR / "overview-labeled-key.png"
+        if overview_path.exists():
+            st.image(str(overview_path), caption="White outline schematic (Field→name guesses — correct anytime)", use_container_width=True)
+        else:
+            st.caption("Overview map not found in farm_maps/.")
+
+        plans = get_farm_plans_for_year(year)
+
+        for loc in FARM_PLAN_LOCATIONS:
+            with st.expander(loc, expanded=False):
+                map_name = FARM_PLAN_MAP_FILES.get(loc)
+                if map_name:
+                    map_path = FARM_MAPS_DIR / map_name
+                    if map_path.exists():
+                        st.image(str(map_path), caption=loc, use_container_width=True)
+                    else:
+                        st.caption("Outline cutout missing for this spot.")
+                else:
+                    st.caption("No outline drawing for this spot (e.g. Bar Pit).")
+
+                notes_key = f"farm_plan_notes_{year}_{loc}"
+                if notes_key not in st.session_state:
+                    st.session_state[notes_key] = plans.get(loc, "")
+
+                st.text_area(
+                    "Notes",
+                    key=notes_key,
+                    height=140,
+                    placeholder="Planting, flooding, food plot mix, observations…",
+                )
+                if st.button("💾 Save", key=f"farm_plan_save_{year}_{loc}", use_container_width=True):
+                    try:
+                        upsert_farm_plan(
+                            year=year,
+                            location=loc,
+                            notes=st.session_state.get(notes_key, ""),
+                            updated_by=st.session_state.username,
+                        )
+                        st.success(f"Saved {loc} for {year}")
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
 
     # ========== HISTORY ==========
     elif page == "View Hunt History":
