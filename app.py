@@ -45,6 +45,7 @@ LOCATION_OPTIONS = [
     "Willow",
     "Bar Pit",
     "Black Bayou",
+    "Pool 1",
     "Other...",
 ]
 
@@ -56,6 +57,7 @@ WILDLIFE_LOCATION_OPTIONS = [
     "Willow",
     "Bar Pit",
     "Black Bayou",
+    "Pool 1",
     "North Plot",
     "Bayou Plot",
     "Sunflower Patch",
