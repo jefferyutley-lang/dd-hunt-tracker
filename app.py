@@ -337,6 +337,7 @@ def get_all_hunts_df(season_filter: str | None = None) -> pd.DataFrame:
             )
         if season_filter and season_filter != "All":
             df = df[df["season"] == season_filter]
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
         return df
 
     conn = get_db_connection()
@@ -366,6 +367,7 @@ def get_all_hunts_df(season_filter: str | None = None) -> pd.DataFrame:
     if season_filter and season_filter != "All":
         df = df[df["season"] == season_filter]
 
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
     return df
 
 
@@ -1401,7 +1403,10 @@ def main():
         st.dataframe(top, hide_index=True, use_container_width=True)
 
         st.subheader("Weekly Totals")
-        df_sorted["week_start"] = df_sorted["date"] - pd.to_timedelta(df_sorted["date"].dt.dayofweek, unit="D")
+        dates = pd.to_datetime(df_sorted["date"], errors="coerce")
+        df_sorted = df_sorted.copy()
+        df_sorted["date"] = dates
+        df_sorted["week_start"] = dates - pd.to_timedelta(dates.dt.dayofweek, unit="D")
         weekly = df_sorted.groupby("week_start")["daily_total"].sum().reset_index()
         weekly = weekly.sort_values("week_start")
         weekly["Week"] = weekly["week_start"].dt.strftime("Week of %b %d")
