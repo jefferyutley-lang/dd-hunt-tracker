@@ -44,6 +44,7 @@ LOCATION_OPTIONS = [
     "Refuge",
     "Willow",
     "Bar Pit",
+    "Bar Plot",
     "Black Bayou",
     "Pool 1",
     "Other...",
@@ -58,7 +59,7 @@ WILDLIFE_LOCATION_OPTIONS = [
     "Bar Pit",
     "Black Bayou",
     "Pool 1",
-    "North Deer/Turkey Plot",
+    "Bar Plot",
     "Bayou Plot",
     "Sunflower Patch",
     "Other...",
@@ -67,7 +68,7 @@ WILDLIFE_LOCATION_OPTIONS = [
 # Farm Plans locations (order matters for UI). No "Other...".
 FARM_PLAN_LOCATIONS = [
     "Bar Pit",
-    "North Deer/Turkey Plot",
+    "Bar Plot",
     "Money",
     "Pool 1",
     "Willow",
@@ -83,7 +84,7 @@ FARM_PLAN_LOCATIONS = [
 # Field numbers are GUESSED from layout — Jeff will correct.
 FARM_PLAN_MAP_FILES = {
     "Bar Pit": "Bar_Pit.png",  # sketched from satellite (includes island)
-    "North Deer/Turkey Plot": "North_Deer_Turkey_Plot.png",  # Field 1 guess
+    "Bar Plot": "Bar_Plot.png",  # was North Deer/Turkey / Field 1
     "Money": "Money.png",  # Field 2 guess
     "Pool 1": "Pool_1.png",  # Field 11 guess
     "Willow": "Willow.png",  # Field 3 guess
