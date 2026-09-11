@@ -1535,9 +1535,17 @@ def main():
 
         overview_path = FARM_MAPS_DIR / "overview-labeled-key.png"
         if overview_path.exists():
-            st.image(str(overview_path), caption="White outline schematic (Field→name guesses — correct anytime)", use_container_width=True)
+            st.image(str(overview_path), caption="Master schematic (cleaned labels)", use_container_width=True)
         else:
             st.caption("Overview map not found in farm_maps/.")
+
+        # Year-specific overview maps
+        if year == 2026:
+            planting_2026 = FARM_MAPS_DIR / "2026-planting-map.jpeg"
+            if planting_2026.exists():
+                st.image(str(planting_2026), caption="2026 color planting map", use_container_width=True)
+            else:
+                st.caption("2026 planting map not found in farm_maps/.")
 
         plans = get_farm_plans_for_year(year)
 
