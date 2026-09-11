@@ -154,8 +154,9 @@ def use_supabase() -> bool:
     return bool(url and key)
 
 
+@st.cache_resource
 def get_supabase_client():
-    """Lazy Supabase client when env is set."""
+    """Lazy process-level Supabase client when env is set (reused across Streamlit reruns)."""
     from supabase import create_client
     url, key = _supabase_env()
     if not url or not key:
