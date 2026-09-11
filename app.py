@@ -154,9 +154,8 @@ def use_supabase() -> bool:
     return bool(url and key)
 
 
-@st.cache_resource
 def get_supabase_client():
-    """Lazy process-level Supabase client when env is set (reused across Streamlit reruns)."""
+    """Lazy Supabase client when env is set."""
     from supabase import create_client
     url, key = _supabase_env()
     if not url or not key:
@@ -1208,7 +1207,7 @@ def main():
 
     # Sidebar
     st.sidebar.title("🦆 Navigation")
-    pages = ["Dashboard", "Submit Daily Report", "Wildlife Survey", "Farm Plans", "View Hunt History", "Season Analytics", "Reports & Exports", "Manage Data"]
+    pages = ["Dashboard", "Submit Hunting Report", "Season Analytics", "View Hunt History", "Wildlife Survey", "Farm Plans", "Reports & Exports", "Manage Data"]
     page = st.sidebar.radio("Go to", pages, index=0)
 
     st.sidebar.divider()
@@ -1296,12 +1295,12 @@ def main():
         st.dataframe(recent, use_container_width=True, hide_index=True)
 
     # ========== SUBMIT ==========
-    elif page == "Submit Daily Report":
+    elif page == "Submit Hunting Report":
         if not is_admin:
             st.warning("🔒 Viewer mode — you can view but not submit new reports.")
             st.stop()
 
-        st.title("📝 Submit Daily Hunt Report")
+        st.title("📝 Submit Hunting Report")
         st.caption("Matches your original paper form. Add photos of birds, scenery, or the crew!")
 
         # ==================== NEW AUTO-FILL SECTION ====================
