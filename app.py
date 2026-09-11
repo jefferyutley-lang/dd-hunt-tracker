@@ -67,15 +67,15 @@ WILDLIFE_LOCATION_OPTIONS = [
 
 # Farm Plans locations (order matters for UI). No "Other...".
 FARM_PLAN_LOCATIONS = [
-    "Bar Pit",
-    "Bar Plot",
-    "Money",
     "Pool 1",
+    "Money",
     "Willow",
     "Refuge",
+    "South Block",
+    "Bar Pit",
     "Black Bayou",
     "Bayou Plot",
-    "South Block",
+    "Bar Plot",
     "Sunflower Patch",
 ]
 
@@ -1549,39 +1549,34 @@ def main():
 
         plans = get_farm_plans_for_year(year)
 
+        st.subheader("Plot notes")
+        st.caption("Notes under each location for this year. Save per plot as you go.")
+
         for loc in FARM_PLAN_LOCATIONS:
-            with st.expander(loc, expanded=False):
-                map_name = FARM_PLAN_MAP_FILES.get(loc)
-                if map_name:
-                    map_path = FARM_MAPS_DIR / map_name
-                    if map_path.exists():
-                        st.image(str(map_path), caption=loc, use_container_width=True)
-                    else:
-                        st.caption("Outline cutout missing for this spot.")
-                else:
-                    st.caption("No outline drawing for this spot (e.g. Bar Pit).")
+            st.markdown(f"**{loc}**")
+            notes_key = f"farm_plan_notes_{year}_{loc}"
+            if notes_key not in st.session_state:
+                st.session_state[notes_key] = plans.get(loc, "")
 
-                notes_key = f"farm_plan_notes_{year}_{loc}"
-                if notes_key not in st.session_state:
-                    st.session_state[notes_key] = plans.get(loc, "")
-
-                st.text_area(
-                    "Notes",
-                    key=notes_key,
-                    height=140,
-                    placeholder="Planting, flooding, food plot mix, observations…",
-                )
-                if st.button("💾 Save", key=f"farm_plan_save_{year}_{loc}", use_container_width=True):
-                    try:
-                        upsert_farm_plan(
-                            year=year,
-                            location=loc,
-                            notes=st.session_state.get(notes_key, ""),
-                            updated_by=st.session_state.username,
-                        )
-                        st.success(f"Saved {loc} for {year}")
-                    except Exception as e:
-                        st.error(f"Save failed: {e}")
+            st.text_area(
+                f"Notes — {loc}",
+                key=notes_key,
+                height=120,
+                label_visibility="collapsed",
+                placeholder="Planting, flooding, food plot mix, observations…",
+            )
+            if st.button("💾 Save", key=f"farm_plan_save_{year}_{loc}", use_container_width=True):
+                try:
+                    upsert_farm_plan(
+                        year=year,
+                        location=loc,
+                        notes=st.session_state.get(notes_key, ""),
+                        updated_by=st.session_state.username,
+                    )
+                    st.success(f"Saved {loc} for {year}")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+            st.divider()
 
     # ========== HISTORY ==========
     elif page == "View Hunt History":
