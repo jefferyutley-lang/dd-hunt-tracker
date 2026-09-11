@@ -1533,24 +1533,43 @@ def main():
         )
         year = int(year)
 
+        # Master schematic — same every year (does not change with Year)
         overview_path = FARM_MAPS_DIR / "overview-labeled-key.png"
         if overview_path.exists():
-            st.image(str(overview_path), caption="Master schematic (cleaned labels)", use_container_width=True)
+            st.image(
+                str(overview_path),
+                caption="Master schematic (same every year)",
+                use_container_width=True,
+            )
         else:
             st.caption("Overview map not found in farm_maps/.")
 
-        # Year-specific overview maps
-        if year == 2026:
-            planting_2026 = FARM_MAPS_DIR / "2026-planting-map.jpeg"
-            if planting_2026.exists():
-                st.image(str(planting_2026), caption="2026 color planting map", use_container_width=True)
-            else:
-                st.caption("2026 planting map not found in farm_maps/.")
+        # Food-plot planting map — one file per year when available
+        planting_path = None
+        for ext in (".jpeg", ".jpg", ".png", ".webp"):
+            candidate = FARM_MAPS_DIR / f"{year}-planting-map{ext}"
+            if candidate.exists():
+                planting_path = candidate
+                break
+        if planting_path is not None:
+            st.image(
+                str(planting_path),
+                caption=f"{year} food plot planting map",
+                use_container_width=True,
+            )
+        else:
+            st.info(
+                f"No food plot planting map for {year} yet "
+                f"(add `farm_maps/{year}-planting-map.jpeg` when you have it)."
+            )
 
         plans = get_farm_plans_for_year(year)
 
-        st.subheader("Plot notes")
-        st.caption("Notes under each location for this year. Save per plot as you go.")
+        st.subheader(f"Plot notes — {year}")
+        st.caption(
+            f"These notes are for {year} only. Change the year above to see other years. "
+            "Save per plot as you go."
+        )
 
         for loc in FARM_PLAN_LOCATIONS:
             st.markdown(f"**{loc}**")
