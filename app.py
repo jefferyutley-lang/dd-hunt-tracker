@@ -785,10 +785,10 @@ def get_weather_open_meteo(target_date: date, lat: float = 36.68218, lon: float 
 
 def get_rainfall_open_meteo(target_date: date, lat: float = 36.68218, lon: float = -89.37869) -> float | None:
     """
-    Rain-only fetch for Submit auto-fill:
-    - Today: sum hourly precipitation from local midnight through the current hour (so far today)
+    Rain-only fetch for Submit auto-fill (inches):
+    - Today: sum hourly precipitation from local midnight through the current hour
     - Past: full-day precipitation_sum from the historical archive
-    Returns inches (Open-Meteo default is mm — convert), or None on failure.
+    Returns None on failure / future dates / API errors (including rate limits).
     """
     today = date.today()
     if target_date > today:
@@ -801,28 +801,29 @@ def get_rainfall_open_meteo(target_date: date, lat: float = 36.68218, lon: float
                 "&hourly=precipitation"
                 "&timezone=America/Chicago"
                 "&forecast_days=1"
+                "&precipitation_unit=inch"
             )
             resp = requests.get(url, timeout=12)
             if resp.status_code != 200:
                 return None
             data = resp.json()
-            hourly = data.get("hourly", {})
+            if data.get("error"):
+                return None
+            hourly = data.get("hourly") or {}
             times = hourly.get("time") or []
             precip = hourly.get("precipitation") or []
             if not times or not precip:
                 return None
             now_local = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%dT%H:00")
-            # Open-Meteo times are local when timezone=America/Chicago; compare ISO prefixes
-            total_mm = 0.0
+            total_in = 0.0
             for t, p in zip(times, precip):
                 if not t.startswith(target_date.isoformat()):
                     continue
                 if t > now_local:
                     break
                 if p is not None:
-                    total_mm += float(p)
-            # Convert mm → inches
-            return round(total_mm / 25.4, 2)
+                    total_in += float(p)
+            return round(total_in, 2)
 
         url = (
             "https://archive-api.open-meteo.com/v1/archive"
@@ -830,16 +831,19 @@ def get_rainfall_open_meteo(target_date: date, lat: float = 36.68218, lon: float
             f"&start_date={target_date.isoformat()}&end_date={target_date.isoformat()}"
             "&daily=precipitation_sum"
             "&timezone=America/Chicago"
+            "&precipitation_unit=inch"
         )
         resp = requests.get(url, timeout=12)
         if resp.status_code != 200:
             return None
         data = resp.json()
-        daily = data.get("daily", {})
+        if data.get("error"):
+            return None
+        daily = data.get("daily") or {}
         vals = daily.get("precipitation_sum") or []
         if not vals or vals[0] is None:
             return None
-        return round(float(vals[0]) / 25.4, 2)
+        return round(float(vals[0]), 2)
     except Exception:
         return None
 
