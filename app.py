@@ -179,6 +179,80 @@ def _parse_hunters_field(raw) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+
+def _hunter_count(raw) -> int:
+    """Number of named hunters on a hunt row."""
+    return len(_parse_hunters_field(raw))
+
+
+def _birds_per_hunter(ducks, raw_hunters) -> float | None:
+    """Birds per hunter for one hunt; None if no hunters listed."""
+    n = _hunter_count(raw_hunters)
+    if n <= 0:
+        return None
+    try:
+        return round(float(ducks) / n, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_hunt_history_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Flat hunt-history table for Reports — sortable in the UI."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    out["Date"] = pd.to_datetime(out["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out["Season"] = out.get("season", "")
+    out["Location"] = out.get("location", "")
+    out["Hunters"] = out.get("hunters", "")
+    out["Hunter Count"] = out["hunters"].apply(_hunter_count)
+    out["Ducks"] = out["daily_total"].fillna(0).astype(int)
+    out["Birds / Hunter"] = [
+        _birds_per_hunter(d, h) for d, h in zip(out["daily_total"], out["hunters"])
+    ]
+    out["Wind"] = out["wind"] if "wind" in out.columns else ""
+    if "temp_high" in out.columns:
+        out["High °F"] = out["temp_high"]
+    elif "high_temp" in out.columns:
+        out["High °F"] = out["high_temp"]
+    else:
+        out["High °F"] = None
+    if "temp_low" in out.columns:
+        out["Low °F"] = out["temp_low"]
+    elif "low_temp" in out.columns:
+        out["Low °F"] = out["low_temp"]
+    else:
+        out["Low °F"] = None
+    out["River"] = out["river_level"] if "river_level" in out.columns else ""
+    out["Rainfall"] = out["rainfall"] if "rainfall" in out.columns else 0
+    # Species columns (friendly names)
+    for sp in SPECIES:
+        col = SPECIES_COLS[sp]
+        if col in out.columns:
+            out[sp] = out[col].fillna(0).astype(int)
+        else:
+            out[sp] = 0
+    cols = [
+        "Date", "Season", "Location", "Hunters", "Hunter Count", "Ducks", "Birds / Hunter",
+        "Wind", "High °F", "Low °F", "River", "Rainfall",
+    ] + list(SPECIES)
+    # Keep Notes at end if present
+    if "notes" in out.columns:
+        out["Notes"] = out["notes"].fillna("")
+        cols.append("Notes")
+    return out[cols]
+
+
+def season_birds_per_hunter(df: pd.DataFrame) -> float | None:
+    """Overall birds per hunter = total ducks / total hunter-slots in the filtered set."""
+    if df is None or df.empty:
+        return None
+    total_ducks = float(df["daily_total"].fillna(0).sum())
+    slots = int(df["hunters"].apply(_hunter_count).sum())
+    if slots <= 0:
+        return None
+    return round(total_ducks / slots, 2)
+
 def _hunters_to_sb(hunters: list[str]) -> str:
     return "\n".join(h.strip() for h in hunters if h and h.strip())
 
@@ -1226,12 +1300,14 @@ def main():
         total_hunts = len(df)
         avg_daily = round(df["daily_total"].mean(), 1) if total_hunts else 0
         best_day = int(df["daily_total"].max()) if total_hunts else 0
+        bph = season_birds_per_hunter(df)
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Total Ducks", f"{total_ducks:,}")
         c2.metric("Hunting Days", total_hunts)
         c3.metric("Avg Daily Bag", f"{avg_daily}")
-        c4.metric("Best Day", best_day)
+        c4.metric("Birds / Hunter", f"{bph:.2f}" if bph is not None else "—")
+        c5.metric("Best Day", best_day)
 
         st.divider()
         st.subheader("📊 Species Distribution")
@@ -1762,10 +1838,76 @@ def main():
 
         st.info("**eBird tip:** The CSV is formatted for easy import into eBird. Adjust 'Protocol' or add exact location coordinates as needed before uploading.")
 
+        st.divider()
+        st.subheader("📋 Hunt History Pivot")
+        st.caption("Full hunt log for the selected season — click any column header to sort. Use the pivot below to roll up by location, season, or hunter.")
+
+        history = build_hunt_history_table(df)
+        st.dataframe(
+            history,
+            use_container_width=True,
+            hide_index=True,
+            height=min(520, 40 + 35 * max(len(history), 1)),
+        )
+        st.download_button(
+            "⬇️ Download hunt history CSV",
+            history.to_csv(index=False),
+            f"dd_hunt_history_{datetime.now().strftime('%Y%m%d')}.csv",
+            "text/csv",
+            use_container_width=True,
+            key="dl_hunt_history_pivot",
+        )
+
+        st.subheader("🔁 Pivot summary")
+        group_by = st.selectbox("Group by", ["Location", "Season", "Hunter"], key="reports_pivot_group")
+        if group_by == "Hunter":
+            rows = []
+            for _, r in df.iterrows():
+                ducks = int(r.get("daily_total") or 0)
+                names = _parse_hunters_field(r.get("hunters"))
+                if not names:
+                    continue
+                for name in names:
+                    rows.append({"Hunter": name, "Ducks": ducks, "Hunts": 1})
+            if rows:
+                pivot = pd.DataFrame(rows).groupby("Hunter", as_index=False).agg(
+                    Hunts=("Hunts", "sum"),
+                    Ducks=("Ducks", "sum"),
+                )
+                # Per-hunter birds average across hunts they attended:
+                # Ducks here sums full-day bags for each hunt they were on (club-style attribution).
+                pivot["Birds / Hunter-Day"] = (pivot["Ducks"] / pivot["Hunts"]).round(2)
+                pivot = pivot.sort_values("Ducks", ascending=False)
+            else:
+                pivot = pd.DataFrame(columns=["Hunter", "Hunts", "Ducks", "Birds / Hunter-Day"])
+        else:
+            key = "location" if group_by == "Location" else "season"
+            label = group_by
+            tmp = df.copy()
+            tmp["_group"] = tmp[key].fillna("—")
+            tmp["_hunters_n"] = tmp["hunters"].apply(_hunter_count)
+            grouped = tmp.groupby("_group", as_index=False).agg(
+                Hunts=("date", "count"),
+                Ducks=("daily_total", "sum"),
+                Hunter_Slots=("_hunters_n", "sum"),
+            )
+            grouped = grouped.rename(columns={"_group": label, "Hunter_Slots": "Hunter Slots"})
+            grouped["Ducks"] = grouped["Ducks"].fillna(0).astype(int)
+            grouped["Birds / Hunter"] = grouped.apply(
+                lambda r: round(float(r["Ducks"]) / float(r["Hunter Slots"]), 2) if r["Hunter Slots"] else None,
+                axis=1,
+            )
+            pivot = grouped.sort_values("Ducks", ascending=False)
+
+        st.dataframe(pivot, use_container_width=True, hide_index=True)
+
         st.subheader("Quick Period Stats")
         if not df.empty:
-            st.metric("Ducks in Selected Period", int(df["daily_total"].sum()))
-            st.metric("Hunts", len(df))
+            bph = season_birds_per_hunter(df)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Ducks in Selected Period", int(df["daily_total"].sum()))
+            m2.metric("Hunts", len(df))
+            m3.metric("Birds / Hunter", f"{bph:.2f}" if bph is not None else "—")
 
     # ========== MANAGE ==========
     elif page == "Manage Data":
