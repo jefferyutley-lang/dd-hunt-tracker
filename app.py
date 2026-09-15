@@ -11,6 +11,7 @@ import pandas as pd
 import plotly.express as px
 import sqlite3
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import os
 from fpdf import FPDF
@@ -781,6 +782,72 @@ def get_weather_open_meteo(target_date: date, lat: float = 36.68218, lon: float 
         return None
 
 
+
+def get_rainfall_open_meteo(target_date: date, lat: float = 36.68218, lon: float = -89.37869) -> float | None:
+    """
+    Rain-only fetch for Submit auto-fill (inches):
+    - Today: sum hourly precipitation from local midnight through the current hour
+    - Past: full-day precipitation_sum from the historical archive
+    Returns None on failure / future dates / API errors (including rate limits).
+    """
+    today = date.today()
+    if target_date > today:
+        return None
+    try:
+        if target_date == today:
+            url = (
+                "https://api.open-meteo.com/v1/forecast"
+                f"?latitude={lat}&longitude={lon}"
+                "&hourly=precipitation"
+                "&timezone=America/Chicago"
+                "&forecast_days=1"
+                "&precipitation_unit=inch"
+            )
+            resp = requests.get(url, timeout=12)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            if data.get("error"):
+                return None
+            hourly = data.get("hourly") or {}
+            times = hourly.get("time") or []
+            precip = hourly.get("precipitation") or []
+            if not times or not precip:
+                return None
+            now_local = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%dT%H:00")
+            total_in = 0.0
+            for t, p in zip(times, precip):
+                if not t.startswith(target_date.isoformat()):
+                    continue
+                if t > now_local:
+                    break
+                if p is not None:
+                    total_in += float(p)
+            return round(total_in, 2)
+
+        url = (
+            "https://archive-api.open-meteo.com/v1/archive"
+            f"?latitude={lat}&longitude={lon}"
+            f"&start_date={target_date.isoformat()}&end_date={target_date.isoformat()}"
+            "&daily=precipitation_sum"
+            "&timezone=America/Chicago"
+            "&precipitation_unit=inch"
+        )
+        resp = requests.get(url, timeout=12)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if data.get("error"):
+            return None
+        daily = data.get("daily") or {}
+        vals = daily.get("precipitation_sum") or []
+        if not vals or vals[0] is None:
+            return None
+        return round(float(vals[0]), 2)
+    except Exception:
+        return None
+
+
 def render_species_input_grid(defaults: dict | None = None, key_prefix: str = "species") -> dict:
     if defaults is None:
         defaults = {sp: 0 for sp in SPECIES}
@@ -1305,35 +1372,7 @@ def main():
         st.caption("Matches your original paper form. Add photos of birds, scenery, or the crew!")
 
         # ==================== NEW AUTO-FILL SECTION ====================
-        st.markdown("### 🌧️ Auto Weather")
-        st.caption("Click the button below after choosing a date. Pulls River Level + Weather (including rainfall) for your farm from official sources.")
-
-        col_date, col_btn = st.columns([1.8, 2.2])
-        with col_date:
-            hunt_date = st.date_input("Hunt Date *", value=date.today(), key="hunt_date_input")
-        with col_btn:
-            if st.button("🔄 Auto Weather", use_container_width=True, type="secondary"):
-                with st.spinner("Contacting New Madrid gauge + Open-Meteo for your farm..."):
-                    river_val = get_river_level_usgs(hunt_date)
-                    weather = get_weather_open_meteo(hunt_date)
-
-                    updated = []
-                    if river_val:
-                        st.session_state.auto_river_level = river_val
-                        updated.append("River Level")
-                    if weather:
-                        st.session_state.auto_wind = weather["wind"]
-                        st.session_state.auto_temp_high = weather["temp_high"]
-                        st.session_state.auto_temp_low = weather["temp_low"]
-                        st.session_state.auto_rainfall = weather.get("rainfall", 0.0)
-                        updated.append("Weather (temp + wind + rainfall)")
-
-                    if updated:
-                        st.success(f"✅ {' + '.join(updated)} loaded from {hunt_date}. You can still edit the values below.")
-                    else:
-                        st.warning("No data available for this date yet. Please enter the fields manually.")
-
-        # Initialize session state keys
+        # Initialize session state keys before date-driven rain auto-fill
         if "auto_river_level" not in st.session_state:
             st.session_state.auto_river_level = ""
         if "auto_wind" not in st.session_state:
@@ -1344,6 +1383,56 @@ def main():
             st.session_state.auto_temp_low = 35
         if "auto_rainfall" not in st.session_state:
             st.session_state.auto_rainfall = 0.0
+        if "rainfall_autofill_date" not in st.session_state:
+            st.session_state.rainfall_autofill_date = None
+
+        st.markdown("### 🌧️ Auto Weather")
+        st.caption(
+            "Rainfall fills automatically when you pick a hunt date "
+            "(so far today, or the full day if the date is past). "
+            "Use Auto Weather for river level, temp, and wind — you can still edit everything below."
+        )
+
+        col_date, col_btn = st.columns([1.8, 2.2])
+        with col_date:
+            hunt_date = st.date_input("Hunt Date *", value=date.today(), key="hunt_date_input")
+        with col_btn:
+            if st.button("🔄 Auto Weather", use_container_width=True, type="secondary"):
+                with st.spinner("Contacting New Madrid gauge + Open-Meteo for your farm..."):
+                    river_val = get_river_level_usgs(hunt_date)
+                    weather = get_weather_open_meteo(hunt_date)
+                    rain_only = get_rainfall_open_meteo(hunt_date)
+
+                    updated = []
+                    if river_val:
+                        st.session_state.auto_river_level = river_val
+                        updated.append("River Level")
+                    if weather:
+                        st.session_state.auto_wind = weather["wind"]
+                        st.session_state.auto_temp_high = weather["temp_high"]
+                        st.session_state.auto_temp_low = weather["temp_low"]
+                        updated.append("Weather (temp + wind)")
+                    # Prefer rain-only helper (correct inches); fall back to weather dict
+                    if rain_only is not None:
+                        st.session_state.auto_rainfall = rain_only
+                        st.session_state.rainfall_autofill_date = hunt_date
+                        updated.append("Rainfall")
+                    elif weather and weather.get("rainfall") is not None:
+                        st.session_state.auto_rainfall = weather.get("rainfall", 0.0)
+                        st.session_state.rainfall_autofill_date = hunt_date
+                        updated.append("Rainfall")
+
+                    if updated:
+                        st.success(f"✅ {' + '.join(updated)} loaded from {hunt_date}. You can still edit the values below.")
+                    else:
+                        st.warning("No data available for this date yet. Please enter the fields manually.")
+
+        # Rain-only auto-fill when the hunt date changes (not continuous live weather)
+        if st.session_state.rainfall_autofill_date != hunt_date:
+            rain_val = get_rainfall_open_meteo(hunt_date)
+            if rain_val is not None:
+                st.session_state.auto_rainfall = rain_val
+            st.session_state.rainfall_autofill_date = hunt_date
 
         # ==================== SUBMIT FORM ====================
         with st.form("submit_form", clear_on_submit=False):
