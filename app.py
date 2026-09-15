@@ -2,7 +2,7 @@
 """
 DD Hunt Tracker
 Enhanced Streamlit app (Wildlife Survey + penick/river logins 2026-09-08) for duck club daily hunting logs.
-Features: photo attachments, season tracking, multi-user roles, PDF reports, eBird export, PWA-ready UI.
+Features: season tracking, multi-user roles, PDF reports, eBird export, PWA-ready UI.
 Logo: DD Lodge Entrance Logo
 """
 
@@ -27,8 +27,6 @@ st.set_page_config(
 
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "duck_hunt.db"
-UPLOAD_DIR = BASE_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
 LOGO_PATH = BASE_DIR / "logo-1.png"
 
 # Species exactly matching the paper form
@@ -295,18 +293,6 @@ def init_db():
         )
     """)
 
-    # Photos table (new)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS hunt_photos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hunt_id INTEGER NOT NULL,
-            filename TEXT NOT NULL,
-            caption TEXT,
-            uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (hunt_id) REFERENCES hunts(id) ON DELETE CASCADE
-        )
-    """)
-
     # Add season column if missing (migration)
     try:
         c.execute("ALTER TABLE hunts ADD COLUMN season TEXT")
@@ -528,20 +514,7 @@ def update_hunt(hunt_id: int, data: dict, hunters: list[str]):
 
 
 def delete_hunt(hunt_id: int):
-    # Always try to clean local photo files / sqlite photo rows
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT filename FROM hunt_photos WHERE hunt_id = ?", (hunt_id,))
-    for row in c.fetchall():
-        try:
-            (UPLOAD_DIR / row[0]).unlink(missing_ok=True)
-        except Exception:
-            pass
-    c.execute("DELETE FROM hunt_photos WHERE hunt_id = ?", (hunt_id,))
-    conn.commit()
-
     if use_supabase():
-        conn.close()
         client = get_supabase_client()
         try:
             client.table("hunts").delete().eq("id", hunt_id).execute()
@@ -550,70 +523,10 @@ def delete_hunt(hunt_id: int):
             raise RuntimeError(f"Supabase delete failed (RLS may block anon delete): {ex}") from ex
         return
 
+    conn = get_db_connection()
+    c = conn.cursor()
     c.execute("DELETE FROM hunt_hunters WHERE hunt_id = ?", (hunt_id,))
     c.execute("DELETE FROM hunts WHERE id = ?", (hunt_id,))
-    conn.commit()
-    conn.close()
-
-
-def add_photos_to_hunt(hunt_id: int, uploaded_files: list, captions: list[str] | None = None):
-    """Save uploaded images and link to hunt."""
-    if captions is None:
-        captions = [""] * len(uploaded_files)
-    for i, up_file in enumerate(uploaded_files):
-        if up_file is None:
-            continue
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_name = "".join(c for c in up_file.name if c.isalnum() or c in "._-").rstrip() or "photo.jpg"
-        filename = f"hunt{hunt_id}_{timestamp}_{safe_name}"
-        file_path = UPLOAD_DIR / filename
-        with open(file_path, "wb") as f:
-            f.write(up_file.getbuffer())
-
-        cap = captions[i].strip() if i < len(captions) else ""
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO hunt_photos (hunt_id, filename, caption) VALUES (?, ?, ?)",
-            (hunt_id, filename, cap)
-        )
-        conn.commit()
-        conn.close()
-
-
-def get_hunt_photos(hunt_id: int) -> list[dict]:
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("""
-        SELECT id, filename, caption, uploaded_at 
-        FROM hunt_photos 
-        WHERE hunt_id = ? 
-        ORDER BY uploaded_at DESC
-    """, (hunt_id,))
-    photos = []
-    for row in c.fetchall():
-        photos.append({
-            "id": row[0],
-            "filename": row[1],
-            "caption": row[2] or "",
-            "uploaded_at": row[3],
-            "full_path": str(UPLOAD_DIR / row[1])
-        })
-    conn.close()
-    return photos
-
-
-def delete_photo(photo_id: int):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT filename FROM hunt_photos WHERE id = ?", (photo_id,))
-    row = c.fetchone()
-    if row:
-        try:
-            (UPLOAD_DIR / row[0]).unlink(missing_ok=True)
-        except:
-            pass
-        c.execute("DELETE FROM hunt_photos WHERE id = ?", (photo_id,))
     conn.commit()
     conn.close()
 
@@ -782,7 +695,6 @@ def get_weather_open_meteo(target_date: date, lat: float = 36.68218, lon: float 
         return None
 
 
-
 def get_rainfall_open_meteo(target_date: date, lat: float = 36.68218, lon: float = -89.37869) -> float | None:
     """
     Rain-only fetch for Submit auto-fill (inches):
@@ -930,7 +842,6 @@ def generate_pdf_report(period_label: str, df: pd.DataFrame, species_totals: dic
 
     pdf.output(str(output_path))
     return output_path
-
 
 
 def _wildlife_species_category(species: str) -> str:
@@ -1369,7 +1280,7 @@ def main():
             st.stop()
 
         st.title("📝 Submit Hunting Report")
-        st.caption("Matches your original paper form. Add photos of birds, scenery, or the crew!")
+        st.caption("Matches your original paper form.")
 
         # ==================== NEW AUTO-FILL SECTION ====================
         # Initialize session state keys before date-driven rain auto-fill
@@ -1462,14 +1373,6 @@ def main():
             st.subheader("📝 Notes")
             notes = st.text_area("Notes / Comments", height=100, placeholder="Memorable moments, conditions...")
 
-            st.subheader("📷 Attach Photos (birds, scenery, group)")
-            photos = st.file_uploader("Upload images (jpg/png)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-            photo_captions = []
-            if photos:
-                for i, p in enumerate(photos):
-                    cap = st.text_input(f"Caption for {p.name}", key=f"cap_new_{i}", placeholder="Optional caption...")
-                    photo_captions.append(cap)
-
             submitted = st.form_submit_button("✅ SUBMIT HUNT REPORT", use_container_width=True, type="primary")
 
         if submitted:
@@ -1492,8 +1395,6 @@ def main():
 
             try:
                 new_id = add_hunt(data, hunters_list)
-                if photos:
-                    add_photos_to_hunt(new_id, photos, photo_captions)
                 daily_total = sum(species_counts.values())
                 st.success(f"🎉 Hunt #{new_id} saved! Daily total: {daily_total} ducks")
 
@@ -1690,7 +1591,7 @@ def main():
     # ========== HISTORY ==========
     elif page == "View Hunt History":
         st.title("📜 Hunt History")
-        st.caption("Browse, search, edit, or delete entries. Photos appear in the details view.")
+        st.caption("Browse, search, edit, or delete entries.")
 
         df = get_all_hunts_df()
         if df.empty:
@@ -1724,9 +1625,7 @@ def main():
 
             if sel_id:
                 details = get_hunt_details(sel_id)
-                photos = get_hunt_photos(sel_id)
-
-                tab1, tab2, tab3 = st.tabs(["📋 Details & Photos", "✏️ Edit", "🗑️ Delete"])
+                tab1, tab2, tab3 = st.tabs(["📋 Details", "✏️ Edit", "🗑️ Delete"])
 
                 with tab1:
                     st.markdown(f"**Hunt #{sel_id}** — {details.get('date')} ({details.get('season', 'N/A')})")
@@ -1735,17 +1634,6 @@ def main():
                     st.write(f"**Hunters:** {', '.join(details.get('hunters', [])) or '—'}")
                     if details.get("notes"):
                         st.info(details["notes"])
-
-                    if photos:
-                        st.subheader("📷 Photos from this hunt")
-                        cols = st.columns(min(3, len(photos)))
-                        for idx, ph in enumerate(photos):
-                            with cols[idx % 3]:
-                                if Path(ph["full_path"]).exists():
-                                    st.image(ph["full_path"], caption=ph["caption"] or ph["filename"][:30], width=180)
-                                if is_admin and st.button(f"🗑️ Delete photo #{ph['id']}", key=f"delph_{ph['id']}"):
-                                    delete_photo(ph["id"])
-                                    st.rerun()
 
                 with tab2:
                     if not is_admin:
@@ -1770,13 +1658,6 @@ def main():
                             curr_counts = {sp: details.get(SPECIES_COLS[sp], 0) for sp in SPECIES}
                             e_counts = render_species_input_grid(defaults=curr_counts, key_prefix=f"edit_{sel_id}")
 
-                            st.subheader("Add more photos (optional)")
-                            new_photos = st.file_uploader("New photos", type=["jpg","png"], accept_multiple_files=True, key=f"newph_{sel_id}")
-                            new_caps = []
-                            if new_photos:
-                                for i, p in enumerate(new_photos):
-                                    new_caps.append(st.text_input(f"Caption for {p.name}", key=f"newcap_{sel_id}_{i}"))
-
                             if st.form_submit_button("💾 Save Changes"):
                                 e_h_list = [h.strip() for h in e_hunters.split("\n") if h.strip()]
                                 if not e_loc:
@@ -1791,8 +1672,6 @@ def main():
                                     edit_data[SPECIES_COLS[sp]] = e_counts.get(sp, 0)
                                 try:
                                     update_hunt(sel_id, edit_data, e_h_list)
-                                    if new_photos:
-                                        add_photos_to_hunt(sel_id, new_photos, new_caps)
                                     st.success("Updated!")
                                     st.rerun()
                                 except Exception as ex:
@@ -1803,7 +1682,7 @@ def main():
                         st.warning("Viewers cannot delete.")
                     else:
                         st.error("Permanent delete!")
-                        if st.checkbox(f"Confirm delete Hunt #{sel_id} and all its photos"):
+                        if st.checkbox(f"Confirm delete Hunt #{sel_id}"):
                             if st.button("🗑️ DELETE HUNT", type="secondary"):
                                 delete_hunt(sel_id)
                                 st.success("Deleted.")
@@ -1899,14 +1778,10 @@ def main():
         if st.button("🧪 Load Sample Data (resets if exists)"):
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("DELETE FROM hunt_photos")
             c.execute("DELETE FROM hunt_hunters")
             c.execute("DELETE FROM hunts")
             conn.commit()
             conn.close()
-            for f in UPLOAD_DIR.glob("*"):
-                try: f.unlink()
-                except: pass
             if load_sample_data():
                 st.success("Sample data loaded with 4 hunts!")
             st.rerun()
@@ -1916,32 +1791,27 @@ def main():
             if st.checkbox("Type YES to confirm"):
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.execute("DELETE FROM hunt_photos")
                 c.execute("DELETE FROM hunt_hunters")
                 c.execute("DELETE FROM hunts")
                 conn.commit()
                 conn.close()
-                for f in UPLOAD_DIR.glob("*"):
-                    try: f.unlink()
-                    except: pass
                 st.success("All data cleared.")
                 st.rerun()
 
         st.subheader("Backup")
-        st.code(f"Database: {DB_PATH}\nUploads folder: {UPLOAD_DIR}")
-        st.info("Copy the entire duck_hunt_tracker folder (including uploads/ and .db) to backup or share with club members. All photos and data travel together.")
+        st.code(f"Database: {DB_PATH}")
+        st.info("Copy the duck_hunt_tracker folder (including the .db) to backup or share with club members.")
 
         st.subheader("About DD Hunt Tracker")
         st.write("""
-        Built to replace paper logs with modern tracking, photos, reports, and role-based access.
+        Built to replace paper logs with modern tracking, reports, and role-based access.
 
         - Matches your original form fields exactly  
-        - Photos per hunt (birds, scenery, crew)  
         - Automatic season detection & filtering (2025-2026 etc.)  
         - Multi-user login (admin full control, viewer read-only)  
         - PDF club reports + eBird export  
         - Mobile-friendly PWA installable on phones/tablets  
-        - 100% private — everything stays in your shared folder
+        - 100% private — data stays in your shared folder / Supabase
 
         Logo proudly displayed: DD Lodge Entrance Logo.
         """)
