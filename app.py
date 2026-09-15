@@ -244,7 +244,7 @@ def build_hunt_history_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def season_birds_per_hunter(df: pd.DataFrame) -> float | None:
-    """Overall birds per hunter = total ducks / total hunter-slots in the filtered set."""
+    """Hunter Avg = total ducks / sum of all hunters submitted (hunter-slots) in the filtered set."""
     if df is None or df.empty:
         return None
     total_ducks = float(df["daily_total"].fillna(0).sum())
@@ -1306,7 +1306,7 @@ def main():
         c1.metric("Total Ducks", f"{total_ducks:,}")
         c2.metric("Hunting Days", total_hunts)
         c3.metric("Avg Daily Bag", f"{avg_daily}")
-        c4.metric("Birds / Hunter", f"{bph:.2f}" if bph is not None else "—")
+        c4.metric("Hunter Avg", f"{bph:.2f}" if bph is not None else "—")
         c5.metric("Best Day", best_day)
 
         st.divider()
@@ -1907,7 +1907,7 @@ def main():
             m1, m2, m3 = st.columns(3)
             m1.metric("Ducks in Selected Period", int(df["daily_total"].sum()))
             m2.metric("Hunts", len(df))
-            m3.metric("Birds / Hunter", f"{bph:.2f}" if bph is not None else "—")
+            m3.metric("Hunter Avg", f"{bph:.2f}" if bph is not None else "—")
 
     # ========== MANAGE ==========
     elif page == "Manage Data":
