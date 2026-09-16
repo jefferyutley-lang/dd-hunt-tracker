@@ -1300,14 +1300,12 @@ def main():
         total_hunts = len(df)
         avg_daily = round(df["daily_total"].mean(), 1) if total_hunts else 0
         best_day = int(df["daily_total"].max()) if total_hunts else 0
-        bph = season_birds_per_hunter(df)
 
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Ducks", f"{total_ducks:,}")
         c2.metric("Hunting Days", total_hunts)
         c3.metric("Avg Daily Bag", f"{avg_daily}")
-        c4.metric("Hunter Avg", f"{bph:.2f}" if bph is not None else "—")
-        c5.metric("Best Day", best_day)
+        c4.metric("Best Day", best_day)
 
         st.divider()
         st.subheader("📊 Species Distribution")
