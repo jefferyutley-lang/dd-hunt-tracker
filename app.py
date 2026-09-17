@@ -1190,6 +1190,41 @@ def upsert_farm_plan(year: int, location: str, notes: str, updated_by: str = "")
     conn.close()
 
 
+
+def record_login(username: str, login_key: str | None = None) -> None:
+    """Best-effort log of a successful club sign-in (Supabase when configured)."""
+    try:
+        if use_supabase():
+            client = get_supabase_client()
+            row = {"username": username}
+            if login_key:
+                row["login_key"] = login_key
+            client.table("login_events").insert(row).execute()
+            return
+        # Local SQLite fallback (dev only)
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                login_key TEXT,
+                logged_in_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        c.execute(
+            "INSERT INTO login_events (username, login_key) VALUES (?, ?)",
+            (username, login_key),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        # Never block login on logging failures
+        pass
+
+
 # ---------------- LOGIN SYSTEM ----------------
 def show_login():
     # Professional centered logo + title
@@ -1238,6 +1273,7 @@ def show_login():
                 }.get(key, key)
                 st.session_state.username = display
                 st.session_state.role = USERS[key]["role"]
+                record_login(display, login_key=key)
                 st.rerun()
             else:
                 st.error("Invalid login. Please use your assigned username and password.")
