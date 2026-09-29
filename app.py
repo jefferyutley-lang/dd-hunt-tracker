@@ -18,16 +18,16 @@ from fpdf import FPDF
 import requests
 
 # ---------------- CONFIG ----------------
+BASE_DIR = Path(__file__).parent
+DB_PATH = BASE_DIR / "duck_hunt.db"
+LOGO_PATH = BASE_DIR / "dd_logo.png"
+
 st.set_page_config(
     page_title="DD Hunt Tracker",
-    page_icon="🦆",
+    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🦆",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-BASE_DIR = Path(__file__).parent
-DB_PATH = BASE_DIR / "duck_hunt.db"
-LOGO_PATH = BASE_DIR / "logo-1.png"
 
 # Species exactly matching the paper form
 SPECIES = [
