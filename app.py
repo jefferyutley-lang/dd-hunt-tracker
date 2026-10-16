@@ -1195,6 +1195,70 @@ WELLS = ["Main", "South Block"]
 RAIN_MONTHS = {7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct"}
 
 
+FARM_ACTIVITIES = ["Planting", "Coffee Bean Spraying", "Brushing", "Farm Disking"]
+
+
+def _fa_sqlite():
+    conn = get_db_connection()
+    conn.execute("""CREATE TABLE IF NOT EXISTS farm_activities (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        activity TEXT NOT NULL, activity_date TEXT NOT NULL, field TEXT DEFAULT '', notes TEXT DEFAULT '',
+        created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    return conn
+
+
+def get_farm_activities() -> list[dict]:
+    if use_supabase():
+        rows = get_supabase_client().table("farm_activities").select("*").execute().data or []
+    else:
+        conn = _fa_sqlite()
+        cur = conn.execute("SELECT * FROM farm_activities")
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        conn.close()
+    for r in rows:
+        r["year"] = int(str(r["activity_date"])[:4])
+    rows.sort(key=lambda r: (str(r["activity_date"]), r.get("id") or 0), reverse=True)
+    return rows
+
+
+def save_farm_activity(data: dict, act_id: int | None = None):
+    data = dict(data)
+    data["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    if use_supabase():
+        t = get_supabase_client().table("farm_activities")
+        (t.update(data).eq("id", act_id) if act_id else t.insert(data)).execute()
+        return
+    conn = _fa_sqlite()
+    if act_id:
+        conn.execute(f"UPDATE farm_activities SET {', '.join(k + ' = ?' for k in data)} WHERE id = ?", (*data.values(), act_id))
+    else:
+        conn.execute(f"INSERT INTO farm_activities ({', '.join(data)}) VALUES ({', '.join('?' * len(data))})", tuple(data.values()))
+    conn.commit()
+    conn.close()
+
+
+def delete_farm_activity(act_id: int):
+    if use_supabase():
+        get_supabase_client().table("farm_activities").delete().eq("id", act_id).execute()
+        return
+    conn = _fa_sqlite()
+    conn.execute("DELETE FROM farm_activities WHERE id = ?", (act_id,))
+    conn.commit()
+    conn.close()
+
+
+def farm_activity_form(prefix: str, cur: dict | None = None) -> dict:
+    cur = cur or {}
+    c1, c2 = st.columns(2)
+    act = c1.selectbox("Activity", FARM_ACTIVITIES, key=f"{prefix}_act",
+                       index=FARM_ACTIVITIES.index(cur["activity"]) if cur.get("activity") in FARM_ACTIVITIES else 0)
+    d = c2.date_input("Date", key=f"{prefix}_date",
+                      value=date.fromisoformat(str(cur["activity_date"])[:10]) if cur.get("activity_date") else date.today())
+    field = st.text_input("Field / area (optional)", value=cur.get("field") or "", key=f"{prefix}_field")
+    notes = st.text_area("Notes (optional)", value=cur.get("notes") or "", key=f"{prefix}_notes", height=80)
+    return {"activity": act, "activity_date": d.isoformat(), "field": field.strip(), "notes": notes.strip()}
+
+
 def _pump_sqlite():
     conn = get_db_connection()
     conn.execute("""CREATE TABLE IF NOT EXISTS well_runs (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1974,6 +2038,61 @@ def main():
                 f"No food plot planting map for {year} yet "
                 f"(add `farm_maps/{year}-planting-map.jpeg` when you have it)."
             )
+
+        st.subheader("🚜 Field work log")
+        st.caption("Planting, coffee bean spraying, brushing, and disking dates.")
+        acts = get_farm_activities()
+        this_year = datetime.now().year
+        cols = st.columns(len(FARM_ACTIVITIES))
+        for c, a in zip(cols, FARM_ACTIVITIES):
+            ds = [str(r["activity_date"])[:10] for r in acts if r["activity"] == a and r["year"] == this_year]
+            c.metric(f"Last {a} ({this_year})", max(ds) if ds else "—")
+        with st.expander("➕ Log field work", expanded=False):
+            with st.form("fa_add_form", clear_on_submit=True):
+                new = farm_activity_form("fa_add")
+                if st.form_submit_button("💾 Save", use_container_width=True):
+                    try:
+                        new["created_by"] = st.session_state.username
+                        save_farm_activity(new)
+                        st.success("Saved")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
+        if not acts:
+            st.info("No field work logged yet.")
+        else:
+            f1, f2 = st.columns(2)
+            fa_years = sorted({r["year"] for r in acts} | {this_year}, reverse=True)
+            fy = f1.selectbox("Year", ["All"] + fa_years, index=1, key="fa_filter_year")
+            fact = f2.selectbox("Activity", ["All"] + FARM_ACTIVITIES, key="fa_filter_act")
+            shown = [r for r in acts if (fy == "All" or r["year"] == fy) and (fact == "All" or r["activity"] == fact)]
+            st.dataframe(pd.DataFrame([{"Date": str(r["activity_date"])[:10], "Activity": r["activity"],
+                                        "Field / area": r.get("field") or "", "Notes": r.get("notes") or ""}
+                                       for r in shown], columns=["Date", "Activity", "Field / area", "Notes"]),
+                         use_container_width=True, hide_index=True)
+            labels = {f"{str(r['activity_date'])[:10]} — {r['activity']} {r.get('field') or ''} (#{r['id']})": r for r in acts}
+            pick = st.selectbox("Edit or delete an entry", list(labels), key="fa_pick")
+            sel = labels[pick]
+            t_e, t_d = st.tabs(["✏️ Edit", "🗑️ Delete"])
+            with t_e:
+                with st.form(f"fa_edit_{sel['id']}"):
+                    upd = farm_activity_form(f"fa_edit_{sel['id']}", sel)
+                    if st.form_submit_button("💾 Update", use_container_width=True):
+                        try:
+                            save_farm_activity(upd, act_id=sel["id"])
+                            st.success("Updated")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Update failed: {e}")
+            with t_d:
+                if st.button("🗑️ Delete this entry", key=f"fa_del_{sel['id']}", use_container_width=True):
+                    try:
+                        delete_farm_activity(sel["id"])
+                        st.success("Deleted")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Delete failed: {e}")
+        st.divider()
 
         plans = get_farm_plans_for_year(year)
 
