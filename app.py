@@ -10,7 +10,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import os
@@ -1190,6 +1190,183 @@ def upsert_farm_plan(year: int, location: str, notes: str, updated_by: str = "")
     conn.close()
 
 
+# ========== PUMPING (well runs + farm rainfall) ==========
+WELLS = ["Main", "South Block"]
+RAIN_MONTHS = {7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct"}
+
+
+def _pump_sqlite():
+    conn = get_db_connection()
+    conn.execute("""CREATE TABLE IF NOT EXISTS well_runs (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        well TEXT NOT NULL, on_date TEXT, on_time TEXT, off_date TEXT, off_time TEXT,
+        notes TEXT DEFAULT '', created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS farm_rainfall (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        year INTEGER NOT NULL, month INTEGER NOT NULL, inches REAL NOT NULL, updated_by TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(year, month))""")
+    return conn
+
+
+def get_well_runs() -> list[dict]:
+    if use_supabase():
+        rows = get_supabase_client().table("well_runs").select("*").execute().data or []
+    else:
+        conn = _pump_sqlite()
+        cur = conn.execute("SELECT * FROM well_runs")
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        conn.close()
+    rows.sort(key=lambda r: (r.get("on_date") or "9999", r.get("id") or 0), reverse=True)
+    return rows
+
+
+def save_well_run(data: dict, run_id: int | None = None):
+    data = dict(data)
+    data["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    if use_supabase():
+        t = get_supabase_client().table("well_runs")
+        (t.update(data).eq("id", run_id) if run_id else t.insert(data)).execute()
+        return
+    conn = _pump_sqlite()
+    if run_id:
+        sets = ", ".join(f"{k} = ?" for k in data)
+        conn.execute(f"UPDATE well_runs SET {sets} WHERE id = ?", (*data.values(), run_id))
+    else:
+        conn.execute(f"INSERT INTO well_runs ({', '.join(data)}) VALUES ({', '.join('?' * len(data))})",
+                     tuple(data.values()))
+    conn.commit()
+    conn.close()
+
+
+def delete_well_run(run_id: int):
+    if use_supabase():
+        get_supabase_client().table("well_runs").delete().eq("id", run_id).execute()
+        return
+    conn = _pump_sqlite()
+    conn.execute("DELETE FROM well_runs WHERE id = ?", (run_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_rainfall_overrides() -> dict:
+    """{(year, month): inches} manual gauge overrides."""
+    if use_supabase():
+        rows = get_supabase_client().table("farm_rainfall").select("year, month, inches").execute().data or []
+    else:
+        conn = _pump_sqlite()
+        rows = [dict(year=a, month=b, inches=c) for a, b, c in
+                conn.execute("SELECT year, month, inches FROM farm_rainfall").fetchall()]
+        conn.close()
+    return {(int(r["year"]), int(r["month"])): float(r["inches"]) for r in rows}
+
+
+def set_rainfall_override(year: int, month: int, inches: float | None, user: str = ""):
+    if use_supabase():
+        t = get_supabase_client().table("farm_rainfall")
+        if inches is None:
+            t.delete().eq("year", year).eq("month", month).execute()
+        else:
+            t.upsert({"year": year, "month": month, "inches": round(float(inches), 2), "updated_by": user,
+                      "updated_at": datetime.utcnow().isoformat() + "Z"}, on_conflict="year,month").execute()
+        return
+    conn = _pump_sqlite()
+    if inches is None:
+        conn.execute("DELETE FROM farm_rainfall WHERE year = ? AND month = ?", (year, month))
+    else:
+        conn.execute("INSERT INTO farm_rainfall (year, month, inches, updated_by) VALUES (?, ?, ?, ?) "
+                     "ON CONFLICT(year, month) DO UPDATE SET inches = excluded.inches, updated_by = excluded.updated_by",
+                     (year, month, float(inches), user))
+    conn.commit()
+    conn.close()
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_monthly_rainfall_open_meteo(year: int, lat: float = 36.68218, lon: float = -89.37869) -> dict:
+    """{month: inches} for Jul-Oct of a year from Open-Meteo archive (same farm coords as hunt rainfall)."""
+    import calendar
+    start = date(year, 7, 1)
+    end = min(date(year, 10, 31), date.today() - timedelta(days=1))
+    if end < start:
+        return {}
+    try:
+        r = requests.get(
+            "https://archive-api.open-meteo.com/v1/archive"
+            f"?latitude={lat}&longitude={lon}&start_date={start}&end_date={end}"
+            "&daily=precipitation_sum&precipitation_unit=inch&timezone=America%2FChicago",
+            timeout=15,
+        )
+        r.raise_for_status()
+        daily = r.json().get("daily", {})
+        out = {}
+        for t, p in zip(daily.get("time") or [], daily.get("precipitation_sum") or []):
+            m = int(t[5:7])
+            out[m] = out.get(m, 0.0) + (p or 0.0)
+        return {m: round(v, 2) for m, v in out.items()}
+    except Exception:
+        return {}
+
+
+def _run_days(r: dict):
+    try:
+        if r.get("on_date") and r.get("off_date"):
+            return (date.fromisoformat(str(r["off_date"])[:10]) - date.fromisoformat(str(r["on_date"])[:10])).days
+    except Exception:
+        pass
+    return None
+
+
+def _run_status(r: dict) -> str:
+    d = _run_days(r)
+    if d is not None:
+        return f"{d} days"
+    if r.get("on_date") and not r.get("off_date"):
+        try:
+            so_far = (date.today() - date.fromisoformat(str(r["on_date"])[:10])).days
+            return f"running ({so_far} days so far)"
+        except Exception:
+            return "running"
+    return "—"
+
+
+def _fmt_t(v):
+    return str(v)[:5] if v else ""
+
+
+def _run_year(r: dict):
+    for k in ("on_date", "off_date"):
+        if r.get(k):
+            return int(str(r[k])[:4])
+    try:
+        return int(str(r.get("created_at"))[:4])
+    except Exception:
+        return None
+
+
+def well_run_form(prefix: str, existing: dict | None = None) -> dict | None:
+    ex = existing or {}
+    def _d(v):
+        return date.fromisoformat(str(v)[:10]) if v else None
+    def _t(v):
+        return datetime.strptime(str(v)[:5], "%H:%M").time() if v else None
+    well = st.selectbox("Well *", WELLS, index=WELLS.index(ex["well"]) if ex.get("well") in WELLS else 0, key=f"{prefix}_well")
+    c1, c2 = st.columns(2)
+    with c1:
+        on_d = st.date_input("Turned on — date (optional)", value=_d(ex.get("on_date")), key=f"{prefix}_on_d")
+        on_t = st.time_input("Turned on — time (optional)", value=_t(ex.get("on_time")), key=f"{prefix}_on_t")
+    with c2:
+        off_d = st.date_input("Turned off — date (optional)", value=_d(ex.get("off_date")), key=f"{prefix}_off_d")
+        off_t = st.time_input("Turned off — time (optional)", value=_t(ex.get("off_time")), key=f"{prefix}_off_t")
+    notes = st.text_area("Notes", value=ex.get("notes") or "", key=f"{prefix}_notes", height=80)
+    return {
+        "well": well,
+        "on_date": on_d.isoformat() if on_d else None,
+        "on_time": on_t.strftime("%H:%M") if on_t else None,
+        "off_date": off_d.isoformat() if off_d else None,
+        "off_time": off_t.strftime("%H:%M") if off_t else None,
+        "notes": notes or "",
+    }
+
+
 
 def record_login(username: str, login_key: str | None = None) -> None:
     """Best-effort log of a successful club sign-in (Supabase when configured)."""
@@ -1296,7 +1473,7 @@ def main():
 
     # Sidebar
     st.sidebar.title("🦆 Navigation")
-    pages = ["Dashboard", "Submit Hunting Report", "Season Analytics", "View Hunt History", "Wildlife Survey", "Farm Plans", "Reports & Exports", "Manage Data"]
+    pages = ["Dashboard", "Submit Hunting Report", "Season Analytics", "View Hunt History", "Wildlife Survey", "Farm Plans", "Pumping", "Reports & Exports", "Manage Data"]
     page = st.sidebar.radio("Go to", pages, index=0)
 
     st.sidebar.divider()
@@ -1697,6 +1874,115 @@ def main():
                 except Exception as e:
                     st.error(f"Save failed: {e}")
             st.divider()
+
+    elif page == "Pumping":
+        st.title("💧 Pumping")
+        st.caption("Well runs for Main and South Block, Jul–Oct farm rainfall, and year-over-year comparison. Dates and times are optional.")
+        tab_runs, tab_rain, tab_yoy = st.tabs(["🚰 Well Runs", "🌧️ Rainfall", "📊 Year over Year"])
+        runs = get_well_runs()
+
+        with tab_runs:
+            with st.expander("➕ Add well run", expanded=False):
+                with st.form("pump_add_form", clear_on_submit=True):
+                    new = well_run_form("pump_add")
+                    if st.form_submit_button("💾 Save run", use_container_width=True):
+                        try:
+                            new["created_by"] = st.session_state.username
+                            save_well_run(new)
+                            st.success("Well run saved")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Save failed: {e}")
+            if not runs:
+                st.info("No well runs yet.")
+            else:
+                st.dataframe(pd.DataFrame([{
+                    "Year": _run_year(r), "Well": r.get("well"),
+                    "Turned on": f"{r.get('on_date') or ''} {_fmt_t(r.get('on_time'))}".strip(),
+                    "Turned off": f"{r.get('off_date') or ''} {_fmt_t(r.get('off_time'))}".strip(),
+                    "Days run": _run_status(r), "Notes": r.get("notes") or "",
+                } for r in runs]), use_container_width=True, hide_index=True)
+                labels = {f"{r.get('well')} — on {r.get('on_date') or '?'} (#{r['id']})": r for r in runs}
+                pick = st.selectbox("Edit or delete a run", list(labels), key="pump_pick")
+                sel = labels[pick]
+                t_edit, t_del = st.tabs(["✏️ Edit", "🗑️ Delete"])
+                with t_edit:
+                    with st.form(f"pump_edit_{sel['id']}"):
+                        upd = well_run_form(f"pump_edit_{sel['id']}", sel)
+                        if st.form_submit_button("💾 Update run", use_container_width=True):
+                            try:
+                                save_well_run(upd, run_id=sel["id"])
+                                st.success("Updated")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Update failed: {e}")
+                with t_del:
+                    if st.button("🗑️ Delete this run", key=f"pump_del_{sel['id']}", use_container_width=True):
+                        try:
+                            delete_well_run(sel["id"])
+                            st.success("Deleted")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Delete failed: {e}")
+
+        overrides = get_rainfall_overrides()
+        run_years = {y for y in (_run_year(r) for r in runs) if y}
+        years = sorted(run_years | {y for y, _ in overrides} | {datetime.now().year}, reverse=True)
+
+        def _rain_for(y):
+            auto = get_monthly_rainfall_open_meteo(y)
+            vals, src = {}, {}
+            for m in RAIN_MONTHS:
+                if (y, m) in overrides:
+                    vals[m], src[m] = overrides[(y, m)], "gauge"
+                elif m in auto:
+                    vals[m], src[m] = auto[m], "auto"
+            return vals, src
+
+        with tab_rain:
+            ry = int(st.number_input("Year", min_value=2000, max_value=2100, value=datetime.now().year, step=1, key="pump_rain_year"))
+            vals, src = _rain_for(ry)
+            st.caption("Auto-filled from Open-Meteo for the farm. Enter a gauge reading to override; clear it to go back to auto.")
+            for m, name in RAIN_MONTHS.items():
+                c1, c2, c3 = st.columns([2, 2, 1])
+                auto_v = get_monthly_rainfall_open_meteo(ry).get(m)
+                c1.metric(name, f'{vals[m]:.2f}"' if m in vals else "—", src.get(m, ""))
+                ov = c2.text_input(f"Gauge override (in) — {name}", value=str(overrides.get((ry, m), "")),
+                                   key=f"pump_ov_{ry}_{m}", placeholder=f"auto {auto_v}" if auto_v is not None else "")
+                if c3.button("💾", key=f"pump_ov_save_{ry}_{m}"):
+                    try:
+                        set_rainfall_override(ry, m, float(ov) if ov.strip() else None, st.session_state.username)
+                        st.success(f"Saved {name} {ry}")
+                        st.rerun()
+                    except ValueError:
+                        st.error("Enter inches as a number, e.g. 2.4")
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
+            if vals:
+                st.markdown(f'**Jul–Oct total {ry}: {sum(vals.values()):.2f}"**')
+
+        with tab_yoy:
+            rows = []
+            for y in years:
+                vals, _ = _rain_for(y)
+                row = {"Year": y}
+                for m, name in RAIN_MONTHS.items():
+                    row[name] = round(vals[m], 2) if m in vals else None
+                row["Rain total (in)"] = round(sum(vals.values()), 2) if vals else None
+                for w in WELLS:
+                    wr = [r for r in runs if r.get("well") == w and _run_year(r) == y]
+                    days = 0
+                    for r in wr:
+                        d = _run_days(r)
+                        if d is None and r.get("on_date") and not r.get("off_date"):
+                            d = (date.today() - date.fromisoformat(str(r["on_date"])[:10])).days
+                        days += d or 0
+                    ons = sorted(str(r["on_date"])[:10] for r in wr if r.get("on_date"))
+                    row[f"{w} days"] = days
+                    row[f"{w} first on"] = ons[0] if ons else ""
+                rows.append(row)
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.caption("Pumping days include runs still going (counted through today).")
 
     # ========== HISTORY ==========
     elif page == "View Hunt History":
