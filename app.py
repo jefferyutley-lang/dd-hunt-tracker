@@ -1368,6 +1368,140 @@ def well_run_form(prefix: str, existing: dict | None = None) -> dict | None:
 
 
 
+# ========== MAINTENANCE (assets + maintenance log) ==========
+SERVICE_TYPES = ["Oil change", "Filters", "Tires", "Battery", "Belt", "Grease/lube", "Inspection", "Repair", "Winterize", "Other"]
+METER_UNITS = ["", "hours", "miles"]
+DEFAULT_ASSETS = [("Yukon", None, "miles"), ("Power Unit", None, "hours"), ("Big Can-Am", 2023, "hours"),
+                  ("Small Can-Am", 2025, "hours"), ("Boat Motor", None, "hours")]
+
+
+def _maint_sqlite():
+    conn = get_db_connection()
+    conn.execute("""CREATE TABLE IF NOT EXISTS assets (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE, model_year INTEGER, meter_unit TEXT, active INTEGER NOT NULL DEFAULT 1,
+        notes TEXT DEFAULT '', purchase_date TEXT, purchase_price REAL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS maintenance_log (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asset_id INTEGER NOT NULL REFERENCES assets(id), service_date TEXT NOT NULL, service_type TEXT NOT NULL,
+        meter_reading REAL, cost REAL, done_by TEXT, notes TEXT DEFAULT '', created_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    if conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 0:
+        conn.executemany("INSERT INTO assets (name, model_year, meter_unit) VALUES (?, ?, ?)", DEFAULT_ASSETS)
+        conn.commit()
+    return conn
+
+
+def _maint_select(table: str) -> list[dict]:
+    if use_supabase():
+        return get_supabase_client().table(table).select("*").execute().data or []
+    conn = _maint_sqlite()
+    cur = conn.execute(f"SELECT * FROM {table}")
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def _maint_save(table: str, data: dict, row_id: int | None = None):
+    data = dict(data)
+    data["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    if use_supabase():
+        t = get_supabase_client().table(table)
+        (t.update(data).eq("id", row_id) if row_id else t.insert(data)).execute()
+        return
+    if "active" in data:
+        data["active"] = 1 if data["active"] else 0
+    conn = _maint_sqlite()
+    if row_id:
+        sets = ", ".join(f"{k} = ?" for k in data)
+        conn.execute(f"UPDATE {table} SET {sets} WHERE id = ?", (*data.values(), row_id))
+    else:
+        conn.execute(f"INSERT INTO {table} ({', '.join(data)}) VALUES ({', '.join('?' * len(data))})", tuple(data.values()))
+    conn.commit()
+    conn.close()
+
+
+def get_assets() -> list[dict]:
+    rows = _maint_select("assets")
+    for r in rows:
+        r["active"] = bool(r.get("active"))
+    return sorted(rows, key=lambda r: r.get("id") or 0)
+
+
+def get_maintenance_log() -> list[dict]:
+    rows = _maint_select("maintenance_log")
+    rows.sort(key=lambda r: (str(r.get("service_date") or ""), r.get("id") or 0), reverse=True)
+    return rows
+
+
+def save_asset(data: dict, asset_id: int | None = None):
+    _maint_save("assets", data, asset_id)
+
+
+def save_maintenance(data: dict, log_id: int | None = None):
+    _maint_save("maintenance_log", data, log_id)
+
+
+def delete_maintenance(log_id: int):
+    if use_supabase():
+        get_supabase_client().table("maintenance_log").delete().eq("id", log_id).execute()
+        return
+    conn = _maint_sqlite()
+    conn.execute("DELETE FROM maintenance_log WHERE id = ?", (log_id,))
+    conn.commit()
+    conn.close()
+
+
+def _num(v):
+    try:
+        return float(v) if v is not None and str(v).strip() != "" else None
+    except ValueError:
+        return None
+
+
+def _asset_label(a: dict) -> str:
+    return f"{a['name']} ({a['model_year']})" if a.get("model_year") else a["name"]
+
+
+def asset_form(prefix: str, existing: dict | None = None) -> dict:
+    ex = existing or {}
+    name = st.text_input("Asset name *", value=ex.get("name") or "", key=f"{prefix}_name")
+    c1, c2, c3 = st.columns(3)
+    my = c1.text_input("Model year (optional)", value=str(ex.get("model_year") or ""), key=f"{prefix}_my")
+    unit = c2.selectbox("Meter unit", METER_UNITS, index=METER_UNITS.index(ex.get("meter_unit") or ""), key=f"{prefix}_unit")
+    active = c3.checkbox("Active", value=ex.get("active", True), key=f"{prefix}_active")
+    c4, c5 = st.columns(2)
+    pd_v = ex.get("purchase_date")
+    pdate = c4.date_input("Purchase date (optional)", value=date.fromisoformat(str(pd_v)[:10]) if pd_v else None, key=f"{prefix}_pdate")
+    pprice = c5.text_input("Purchase price $ (optional)", value=str(ex.get("purchase_price") or ""), key=f"{prefix}_pprice")
+    notes = st.text_area("Notes", value=ex.get("notes") or "", key=f"{prefix}_notes", height=70)
+    my_v = _num(my)
+    return {"name": name.strip(), "model_year": int(my_v) if my_v else None, "meter_unit": unit or None,
+            "active": active, "purchase_date": pdate.isoformat() if pdate else None,
+            "purchase_price": _num(pprice), "notes": notes or ""}
+
+
+def maintenance_form(prefix: str, assets: list[dict], existing: dict | None = None) -> dict:
+    ex = existing or {}
+    ids = [a["id"] for a in assets]
+    by_id = {a["id"]: a for a in assets}
+    aid = st.selectbox("Asset *", ids, format_func=lambda i: _asset_label(by_id[i]),
+                       index=ids.index(ex["asset_id"]) if ex.get("asset_id") in ids else 0, key=f"{prefix}_asset")
+    c1, c2 = st.columns(2)
+    sd = ex.get("service_date")
+    sdate = c1.date_input("Service date *", value=date.fromisoformat(str(sd)[:10]) if sd else date.today(), key=f"{prefix}_date")
+    stype = c2.selectbox("Service type *", SERVICE_TYPES,
+                         index=SERVICE_TYPES.index(ex["service_type"]) if ex.get("service_type") in SERVICE_TYPES else 0, key=f"{prefix}_type")
+    c3, c4, c5 = st.columns(3)
+    unit = by_id[aid].get("meter_unit") or "hours/miles"
+    meter = c3.text_input(f"Meter reading ({unit}, optional)", value=str(ex.get("meter_reading") or ""), key=f"{prefix}_meter")
+    cost = c4.text_input("Cost $ (optional)", value=str(ex.get("cost") or ""), key=f"{prefix}_cost")
+    by = c5.text_input("Done by (optional)", value=ex.get("done_by") or "", key=f"{prefix}_by")
+    notes = st.text_area("Notes", value=ex.get("notes") or "", key=f"{prefix}_notes", height=70)
+    return {"asset_id": aid, "service_date": sdate.isoformat(), "service_type": stype,
+            "meter_reading": _num(meter), "cost": _num(cost), "done_by": by or None, "notes": notes or ""}
+
+
 def record_login(username: str, login_key: str | None = None) -> None:
     """Best-effort log of a successful club sign-in (Supabase when configured)."""
     try:
@@ -1473,7 +1607,7 @@ def main():
 
     # Sidebar
     st.sidebar.title("🦆 Navigation")
-    pages = ["Dashboard", "Submit Hunting Report", "Season Analytics", "View Hunt History", "Wildlife Survey", "Farm Plans", "Pumping", "Reports & Exports", "Manage Data"]
+    pages = ["Dashboard", "Submit Hunting Report", "Season Analytics", "View Hunt History", "Wildlife Survey", "Farm Plans", "Pumping", "Maintenance", "Reports & Exports", "Manage Data"]
     page = st.sidebar.radio("Go to", pages, index=0)
 
     st.sidebar.divider()
@@ -1983,6 +2117,152 @@ def main():
                 rows.append(row)
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
             st.caption("Pumping days include runs still going (counted through today).")
+
+    elif page == "Maintenance":
+        st.title("🔧 Maintenance")
+        st.caption("Service log for the club's equipment, last service per asset, and cost of ownership.")
+        assets = get_assets()
+        log = get_maintenance_log()
+        by_id = {a["id"]: a for a in assets}
+        active_assets = [a for a in assets if a["active"]] or assets
+        t_log, t_last, t_cost, t_own, t_assets = st.tabs(["📋 Log", "🕒 Last Service", "💵 Costs by Year", "🏷️ Cost of Ownership", "🚜 Assets"])
+
+        with t_log:
+            if assets:
+                with st.expander("➕ Add maintenance entry", expanded=False):
+                    with st.form("maint_add_form", clear_on_submit=True):
+                        new = maintenance_form("maint_add", active_assets)
+                        if st.form_submit_button("💾 Save entry", use_container_width=True):
+                            try:
+                                new["created_by"] = st.session_state.username
+                                save_maintenance(new)
+                                st.success("Entry saved")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Save failed: {e}")
+            names = ["All assets"] + [_asset_label(a) for a in assets]
+            filt = st.selectbox("Filter by asset", names, key="maint_filter")
+            shown = log if filt == "All assets" else [r for r in log if _asset_label(by_id.get(r["asset_id"], {"name": "?"})) == filt]
+            if not shown:
+                st.info("No maintenance entries yet.")
+            else:
+                st.dataframe(pd.DataFrame([{
+                    "Date": str(r["service_date"])[:10], "Asset": _asset_label(by_id[r["asset_id"]]) if r["asset_id"] in by_id else "?",
+                    "Type": r["service_type"], "Meter": _num(r.get("meter_reading")), "Cost $": _num(r.get("cost")),
+                    "Done by": r.get("done_by") or "", "Notes": r.get("notes") or "",
+                } for r in shown]), use_container_width=True, hide_index=True)
+                labels = {f"{str(r['service_date'])[:10]} — {by_id.get(r['asset_id'], {'name': '?'})['name']} — {r['service_type']} (#{r['id']})": r for r in shown}
+                sel = labels[st.selectbox("Edit or delete an entry", list(labels), key="maint_pick")]
+                te, td = st.tabs(["✏️ Edit", "🗑️ Delete"])
+                with te:
+                    with st.form(f"maint_edit_{sel['id']}"):
+                        upd = maintenance_form(f"maint_edit_{sel['id']}", assets, sel)
+                        if st.form_submit_button("💾 Update entry", use_container_width=True):
+                            try:
+                                save_maintenance(upd, log_id=sel["id"])
+                                st.success("Updated")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Update failed: {e}")
+                with td:
+                    if st.button("🗑️ Delete this entry", key=f"maint_del_{sel['id']}", use_container_width=True):
+                        try:
+                            delete_maintenance(sel["id"])
+                            st.success("Deleted")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Delete failed: {e}")
+
+        with t_last:
+            rows = []
+            for a in assets:
+                ar = [r for r in log if r["asset_id"] == a["id"]]
+                last = ar[0] if ar else None
+                rows.append({"Asset": _asset_label(a), "Active": "Yes" if a["active"] else "No",
+                             "Last service": str(last["service_date"])[:10] if last else "—",
+                             "Type": last["service_type"] if last else "",
+                             "Meter": f"{_num(last.get('meter_reading')):g} {a.get('meter_unit') or ''}".strip() if last and _num(last.get("meter_reading")) is not None else "",
+                             "Days since": (date.today() - date.fromisoformat(str(last["service_date"])[:10])).days if last else None})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        with t_cost:
+            if not log:
+                st.info("No costs recorded yet.")
+            else:
+                df = pd.DataFrame([{"Asset": _asset_label(by_id[r["asset_id"]]) if r["asset_id"] in by_id else "?",
+                                    "Year": int(str(r["service_date"])[:4]), "Cost": _num(r.get("cost")) or 0.0} for r in log])
+                pv = df.pivot_table(index="Asset", columns="Year", values="Cost", aggfunc="sum", fill_value=0.0)
+                pv.columns = [str(c) for c in pv.columns]
+                pv["Total"] = pv.sum(axis=1)
+                st.dataframe(pv.round(2), use_container_width=True)
+
+        with t_own:
+            rows = []
+            for a in assets:
+                ar = [r for r in log if r["asset_id"] == a["id"]]
+                maint = sum(_num(r.get("cost")) or 0.0 for r in ar)
+                price = _num(a.get("purchase_price"))
+                rows.append({"Asset": _asset_label(a), "Purchased": str(a.get("purchase_date") or "")[:10],
+                             "Purchase $": price, "Maintenance $": round(maint, 2),
+                             "Total cost $": round((price or 0.0) + maint, 2)})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            if assets:
+                pick = st.selectbox("Per-year breakdown for", [a["id"] for a in assets],
+                                    format_func=lambda i: _asset_label(by_id[i]), key="maint_own_pick")
+                a = by_id[pick]
+                price = _num(a.get("purchase_price")) or 0.0
+                yearly = {}
+                for r in log:
+                    if r["asset_id"] == pick:
+                        y = int(str(r["service_date"])[:4])
+                        yearly[y] = yearly.get(y, 0.0) + (_num(r.get("cost")) or 0.0)
+                py = int(str(a["purchase_date"])[:4]) if a.get("purchase_date") else None
+                years = sorted(set(yearly) | ({py} if py else set()))
+                run, out = price, []
+                for y in years:
+                    run += yearly.get(y, 0.0)
+                    out.append({"Year": y, "Purchase $": price if y == py else None,
+                                "Maintenance $": round(yearly.get(y, 0.0), 2), "Running total $": round(run, 2)})
+                if out:
+                    st.dataframe(pd.DataFrame(out), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No purchase info or maintenance costs for this asset yet.")
+                if not py and price:
+                    st.caption("Add a purchase date to place the purchase price in a year; it's included in the running total from the start.")
+
+        with t_assets:
+            with st.expander("➕ Add asset", expanded=False):
+                with st.form("asset_add_form", clear_on_submit=True):
+                    na = asset_form("asset_add")
+                    if st.form_submit_button("💾 Save asset", use_container_width=True):
+                        if not na["name"]:
+                            st.error("Name is required")
+                        else:
+                            try:
+                                save_asset(na)
+                                st.success("Asset added")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Save failed: {e}")
+            st.dataframe(pd.DataFrame([{"Asset": a["name"], "Model year": a.get("model_year"), "Meter": a.get("meter_unit") or "",
+                                        "Purchased": str(a.get("purchase_date") or "")[:10], "Purchase $": _num(a.get("purchase_price")),
+                                        "Active": "Yes" if a["active"] else "No", "Notes": a.get("notes") or ""} for a in assets]),
+                         use_container_width=True, hide_index=True)
+            if assets:
+                aid = st.selectbox("Edit asset (uncheck Active to deactivate)", [a["id"] for a in assets],
+                                   format_func=lambda i: _asset_label(by_id[i]), key="asset_pick")
+                with st.form(f"asset_edit_{aid}"):
+                    ua = asset_form(f"asset_edit_{aid}", by_id[aid])
+                    if st.form_submit_button("💾 Update asset", use_container_width=True):
+                        if not ua["name"]:
+                            st.error("Name is required")
+                        else:
+                            try:
+                                save_asset(ua, asset_id=aid)
+                                st.success("Updated")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Update failed: {e}")
 
     # ========== HISTORY ==========
     elif page == "View Hunt History":
