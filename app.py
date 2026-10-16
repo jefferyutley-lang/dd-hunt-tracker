@@ -2011,9 +2011,23 @@ def main():
 
     elif page == "Pumping":
         st.title("💧 Pumping")
-        st.caption("Well runs for Main and South Block, Jul–Oct farm rainfall, and year-over-year comparison. Dates and times are optional.")
-        tab_runs, tab_rain, tab_yoy = st.tabs(["🚰 Well Runs", "🌧️ Rainfall", "📊 Year over Year"])
+        st.caption("Farm wells (Main and South Block) and Jul–Oct farm rainfall by year. Dates and times are optional.")
+        tab_runs, tab_rain = st.tabs(["🚰 Farm Wells", "🌧️ Rainfall"])
         runs = get_well_runs()
+        overrides = get_rainfall_overrides()
+        run_years = {y for y in (_run_year(r) for r in runs) if y}
+        years = sorted(run_years | {y for y, _ in overrides} | set(range(datetime.now().year - 2, datetime.now().year + 1)), reverse=True)
+
+        def _rain_for(y):
+            auto = get_monthly_rainfall_open_meteo(y)
+            vals, src = {}, {}
+            for m in RAIN_MONTHS:
+                if (y, m) in overrides:
+                    vals[m], src[m] = overrides[(y, m)], "gauge"
+                elif m in auto:
+                    vals[m], src[m] = auto[m], "auto"
+            return vals, src
+
 
         with tab_runs:
             with st.expander("➕ Add well run", expanded=False):
@@ -2059,21 +2073,39 @@ def main():
                         except Exception as e:
                             st.error(f"Delete failed: {e}")
 
-        overrides = get_rainfall_overrides()
-        run_years = {y for y in (_run_year(r) for r in runs) if y}
-        years = sorted(run_years | {y for y, _ in overrides} | {datetime.now().year}, reverse=True)
-
-        def _rain_for(y):
-            auto = get_monthly_rainfall_open_meteo(y)
-            vals, src = {}, {}
-            for m in RAIN_MONTHS:
-                if (y, m) in overrides:
-                    vals[m], src[m] = overrides[(y, m)], "gauge"
-                elif m in auto:
-                    vals[m], src[m] = auto[m], "auto"
-            return vals, src
+            st.subheader("Pumping by year")
+            wrows = []
+            for y in years:
+                row = {"Year": y}
+                for w in WELLS:
+                    wr = [r for r in runs if r.get("well") == w and _run_year(r) == y]
+                    days = 0
+                    for r in wr:
+                        d = _run_days(r)
+                        if d is None and r.get("on_date") and not r.get("off_date"):
+                            d = (date.today() - date.fromisoformat(str(r["on_date"])[:10])).days
+                        days += d or 0
+                    ons = sorted(str(r["on_date"])[:10] for r in wr if r.get("on_date"))
+                    row[f"{w} days"] = days
+                    row[f"{w} first on"] = ons[0] if ons else ""
+                wrows.append(row)
+            st.dataframe(pd.DataFrame(wrows), use_container_width=True, hide_index=True)
+            st.caption("Pumping days include runs still going (counted through today).")
 
         with tab_rain:
+            st.caption("Jul–Oct farm rainfall (inches). Auto-filled from Open-Meteo; gauge readings override. Current October is partial through yesterday.")
+            rrows = []
+            for y in years:
+                vals, src = _rain_for(y)
+                row = {"Year": y}
+                for m, name in RAIN_MONTHS.items():
+                    row[name] = round(vals[m], 2) if m in vals else None
+                row["Total"] = round(sum(vals.values()), 2) if vals else None
+                gauges = [RAIN_MONTHS[m] for m in src if src[m] == "gauge"]
+                row["Gauge overrides"] = ", ".join(gauges)
+                rrows.append(row)
+            st.dataframe(pd.DataFrame(rrows), use_container_width=True, hide_index=True)
+            st.markdown("**Enter or edit a gauge reading**")
             ry = int(st.number_input("Year", min_value=2000, max_value=2100, value=datetime.now().year, step=1, key="pump_rain_year"))
             vals, src = _rain_for(ry)
             st.caption("Auto-filled from Open-Meteo for the farm. Enter a gauge reading to override; clear it to go back to auto.")
@@ -2095,28 +2127,6 @@ def main():
             if vals:
                 st.markdown(f'**Jul–Oct total {ry}: {sum(vals.values()):.2f}"**')
 
-        with tab_yoy:
-            rows = []
-            for y in years:
-                vals, _ = _rain_for(y)
-                row = {"Year": y}
-                for m, name in RAIN_MONTHS.items():
-                    row[name] = round(vals[m], 2) if m in vals else None
-                row["Rain total (in)"] = round(sum(vals.values()), 2) if vals else None
-                for w in WELLS:
-                    wr = [r for r in runs if r.get("well") == w and _run_year(r) == y]
-                    days = 0
-                    for r in wr:
-                        d = _run_days(r)
-                        if d is None and r.get("on_date") and not r.get("off_date"):
-                            d = (date.today() - date.fromisoformat(str(r["on_date"])[:10])).days
-                        days += d or 0
-                    ons = sorted(str(r["on_date"])[:10] for r in wr if r.get("on_date"))
-                    row[f"{w} days"] = days
-                    row[f"{w} first on"] = ons[0] if ons else ""
-                rows.append(row)
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-            st.caption("Pumping days include runs still going (counted through today).")
 
     elif page == "Maintenance":
         st.title("🔧 Maintenance")
