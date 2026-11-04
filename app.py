@@ -1396,6 +1396,33 @@ def _fmt_t(v):
     return str(v)[:5] if v else ""
 
 
+def _run_bounds(r: dict, now=None):
+    """(start, end, running) datetimes for a well run. Missing on/off time -> midnight (date-only runs count days x 24).
+    A run with no off date is still running and counts through now."""
+    if not r.get("on_date"):
+        return None
+    def _dt(d, t):
+        tt = str(t)[:5] if t else "00:00"
+        return datetime.fromisoformat(f"{str(d)[:10]}T{tt}")
+    try:
+        start = _dt(r["on_date"], r.get("on_time"))
+        if r.get("off_date"):
+            return start, _dt(r["off_date"], r.get("off_time")), False
+        return start, (now or datetime.now()), True
+    except Exception:
+        return None
+
+
+def _run_hours(r: dict, since=None, now=None):
+    b = _run_bounds(r, now)
+    if not b:
+        return None
+    start, end, _ = b
+    if since and start < since:
+        start = since
+    return max(0.0, (end - start).total_seconds() / 3600.0)
+
+
 def _run_year(r: dict):
     for k in ("on_date", "off_date"):
         if r.get(k):
@@ -2167,7 +2194,9 @@ def main():
                     "Year": _run_year(r), "Well": r.get("well"),
                     "Turned on": f"{r.get('on_date') or ''} {_fmt_t(r.get('on_time'))}".strip(),
                     "Turned off": f"{r.get('off_date') or ''} {_fmt_t(r.get('off_time'))}".strip(),
-                    "Days run": _run_status(r), "Notes": r.get("notes") or "",
+                    "Days run": _run_status(r),
+                    "Total Runtime (hrs)": (round(_run_hours(r), 1) if _run_hours(r) is not None else None),
+                    "Notes": r.get("notes") or "",
                 } for r in runs]), use_container_width=True, hide_index=True)
                 labels = {f"{r.get('well')} — on {r.get('on_date') or '?'} (#{r['id']})": r for r in runs}
                 pick = st.selectbox("Edit or delete a run", list(labels), key="pump_pick")
@@ -2209,7 +2238,7 @@ def main():
                     row[f"{w} first on"] = ons[0] if ons else ""
                 wrows.append(row)
             st.dataframe(pd.DataFrame(wrows), use_container_width=True, hide_index=True)
-            st.caption("Pumping days include runs still going (counted through today).")
+            st.caption("Pumping days include runs still going (counted through today). Total Runtime (hrs) = turned off minus turned on; a missing time counts as midnight, and a run with no off date counts through now.")
 
         with tab_rain:
             st.caption("Jul–Oct farm rainfall (inches). Auto-filled from Open-Meteo; gauge readings override. Current October is partial through yesterday.")
@@ -2313,6 +2342,21 @@ def main():
                              "Meter": f"{_num(last.get('meter_reading')):g} {a.get('meter_unit') or ''}".strip() if last and _num(last.get("meter_reading")) is not None else "",
                              "Days since": (date.today() - date.fromisoformat(str(last["service_date"])[:10])).days if last else None})
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            pu = next((a for a in assets if a["name"].strip().lower() == "power unit"), None)
+            if pu:
+                pul = [r for r in log if r["asset_id"] == pu["id"]]
+                runs_all = get_well_runs()
+                if pul:
+                    last_d = date.fromisoformat(str(pul[0]["service_date"])[:10])
+                    since = datetime.combine(last_d, datetime.min.time())
+                    hrs = sum(h for h in (_run_hours(r, since=since) for r in runs_all
+                                          if _run_bounds(r) and _run_bounds(r)[1] > since) if h)
+                    st.metric("Power Unit hours since last service", f"{hrs:,.1f} hrs",
+                              f"since {last_d} ({pul[0]['service_type']})", delta_color="off")
+                else:
+                    hrs = sum(h for h in (_run_hours(r) for r in runs_all) if h)
+                    st.metric("Power Unit hours (no service logged yet)", f"{hrs:,.1f} hrs", delta_color="off")
+                st.caption("Power Unit hours = total well runtime (Main + South Block, from the Pumping tab) from the start of the last Power Unit service date, including any run still going.")
 
         with t_cost:
             if not log:
