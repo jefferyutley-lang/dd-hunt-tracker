@@ -2182,7 +2182,7 @@ def main():
                     st.subheader("Strategy")
                     st.markdown(
                         "- Once a field has reached the last board, you should consider it full unless you can stay overnight.\n"
-                        "- Ideally members should go every three days to check.\n"
+                        "- Ideally, members should go every three days to check.\n"
                         "- Always pump into Pool 1 or Money. That gives you more options, as the well will produce more water than can go through the gate.\n"
                         "- Make sure all inner gates have all boards removed."
                     )
