@@ -2181,10 +2181,11 @@ def main():
                 with st.container(border=True):
                     st.subheader("Strategy")
                     st.markdown(
-                        "- Once a field has reached the last board, you should consider it full unless you can stay overnight.\n"
+                        "- Once a field has reached the Top Board, you should consider it full unless you can stay overnight.\n"
                         "- Ideally, members should go every three days to check.\n"
                         "- Always pump into Pool 1 or Money. That gives you more options, as the well will produce more water than can go through the gate.\n"
-                        "- Make sure all inner gates have all boards removed."
+                        "- Make sure all inner gates have all boards removed.\n"
+                        "- Remember South Block does not need more than 12 days."
                     )
             with col_wells:
                 with st.expander("➕ Add well run", expanded=False):
