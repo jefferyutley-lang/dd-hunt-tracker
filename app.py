@@ -10,12 +10,16 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import os
+import json
+import secrets
+import hashlib
 from fpdf import FPDF
 import requests
+import streamlit.components.v1 as components
 
 # ---------------- CONFIG ----------------
 BASE_DIR = Path(__file__).parent
@@ -410,6 +414,18 @@ def init_db():
             updated_by TEXT,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(year, location)
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            revoked INTEGER NOT NULL DEFAULT 0
         )
     """)
 
@@ -1628,10 +1644,295 @@ def record_login(username: str, login_key: str | None = None) -> None:
 
 
 # ---------------- LOGIN SYSTEM ----------------
+AUTH_COOKIE = "dd_stay"
+AUTH_DAYS = 30
+
+CLUB_USERS = {
+    "jeff": {"pw": "duckhunt", "role": "admin"},
+    "jeffery.utley@gmail.com": {"pw": "duckhunt", "role": "admin"},
+    "admin@ddhunt.com": {"pw": "duckhunt", "role": "admin"},
+    "andrew": {"pw": "andrew123", "role": "admin"},
+    "kyle": {"pw": "kyle123", "role": "admin"},
+    "adam": {"pw": "adam123", "role": "admin"},
+    "justin": {"pw": "justin123", "role": "admin"},
+    "mcguire": {"pw": "mcguire123", "role": "admin"},
+    "caleb": {"pw": "caleb123", "role": "admin"},
+    "calebjutley@icloud.com": {"pw": "caleb123", "role": "admin"},
+    "penick": {"pw": "penick123", "role": "admin"},
+    "penick.river@icloud.com": {"pw": "penick123", "role": "admin"},
+    "river": {"pw": "river123", "role": "admin"},
+}
+LOGIN_DISPLAY_NAMES = {
+    "jeffery.utley@gmail.com": "jeff",
+    "admin@ddhunt.com": "jeff",
+    "calebjutley@icloud.com": "caleb",
+    "penick.river@icloud.com": "penick",
+}
+
+
+def _club_display_name(login_key: str) -> str:
+    return LOGIN_DISPLAY_NAMES.get(login_key, login_key)
+
+
+def _club_role(username: str) -> str | None:
+    rec = CLUB_USERS.get((username or "").strip().lower())
+    return rec["role"] if rec else None
+
+
+def _hash_auth_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_iso_dt(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text_v = str(value).strip()
+        if not text_v:
+            return None
+        if text_v.endswith("Z"):
+            text_v = text_v[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text_v)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _read_auth_cookie() -> str | None:
+    try:
+        cookies = getattr(st.context, "cookies", None) or {}
+        raw = cookies.get(AUTH_COOKIE)
+    except Exception:
+        raw = None
+    if not raw:
+        return None
+    token = str(raw).strip()
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+    if len(token) < 16 or any(c not in allowed for c in token):
+        return None
+    return token
+
+
+def _inject_cookie_script(cookie: str) -> None:
+    payload = json.dumps(cookie)
+    components.html(
+        f"""<!DOCTYPE html><html><body><script>
+(function() {{
+  var c = {payload};
+  var secure = (window.location.protocol === 'https:') ? '; Secure' : '';
+  c = c + secure;
+  document.cookie = c;
+  try {{ window.parent.document.cookie = c; }} catch (e) {{}}
+}})();
+</script></body></html>""",
+        height=0,
+        width=0,
+    )
+
+
+def _apply_pending_cookie_js() -> None:
+    """Write or clear the stay-logged-in cookie in the browser (including iOS PWA)."""
+    token = st.session_state.get("_pending_cookie_set")
+    if token:
+        max_age = AUTH_DAYS * 86400
+        _inject_cookie_script(f"{AUTH_COOKIE}={token}; path=/; max-age={max_age}; SameSite=Lax")
+        if _read_auth_cookie() == token:
+            st.session_state.pop("_pending_cookie_set", None)
+    if st.session_state.get("_pending_cookie_clear"):
+        _inject_cookie_script(
+            f"{AUTH_COOKIE}=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+        )
+        if not _read_auth_cookie():
+            st.session_state.pop("_pending_cookie_clear", None)
+
+
+def _ensure_sqlite_auth_sessions(conn) -> None:
+    conn.cursor().execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            revoked INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+
+def issue_auth_session(username: str) -> str | None:
+    """Create a 30-day session and return the raw token (store only the hash)."""
+    try:
+        token = secrets.token_urlsafe(32)
+        token_hash = _hash_auth_token(token)
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(days=AUTH_DAYS)
+        row = {
+            "username": username,
+            "token_hash": token_hash,
+            "created_at": now.isoformat(),
+            "expires_at": expires.isoformat(),
+            "last_seen_at": now.isoformat(),
+            "revoked": False,
+        }
+        if use_supabase():
+            get_supabase_client().table("auth_sessions").insert(row).execute()
+        else:
+            conn = get_db_connection()
+            _ensure_sqlite_auth_sessions(conn)
+            conn.cursor().execute(
+                """
+                INSERT INTO auth_sessions
+                    (username, token_hash, created_at, expires_at, last_seen_at, revoked)
+                VALUES (?, ?, ?, ?, ?, 0)
+                """,
+                (username, token_hash, row["created_at"], row["expires_at"], row["last_seen_at"]),
+            )
+            conn.commit()
+            conn.close()
+        return token
+    except Exception:
+        return None
+
+
+def lookup_auth_session(token: str) -> dict | None:
+    """Return a valid (unexpired, not revoked) session for this token, or None."""
+    try:
+        token_hash = _hash_auth_token(token)
+        now = datetime.now(timezone.utc)
+        row = None
+        if use_supabase():
+            resp = (
+                get_supabase_client()
+                .table("auth_sessions")
+                .select("id,username,expires_at,revoked")
+                .eq("token_hash", token_hash)
+                .limit(1)
+                .execute()
+            )
+            rows = resp.data or []
+            row = rows[0] if rows else None
+        else:
+            conn = get_db_connection()
+            _ensure_sqlite_auth_sessions(conn)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, username, expires_at, revoked FROM auth_sessions WHERE token_hash = ?",
+                (token_hash,),
+            )
+            found = cur.fetchone()
+            conn.close()
+            if found:
+                row = {
+                    "id": found[0],
+                    "username": found[1],
+                    "expires_at": found[2],
+                    "revoked": found[3],
+                }
+        if not row:
+            return None
+        if row.get("revoked") in (True, 1, "1", "t", "true"):
+            return None
+        expires = _parse_iso_dt(row.get("expires_at"))
+        if expires is None or expires <= now:
+            return None
+        if not _club_role(row.get("username") or ""):
+            return None
+        return row
+    except Exception:
+        return None
+
+
+def touch_auth_session(session_id) -> None:
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        if use_supabase():
+            get_supabase_client().table("auth_sessions").update({"last_seen_at": now}).eq("id", session_id).execute()
+        else:
+            conn = get_db_connection()
+            _ensure_sqlite_auth_sessions(conn)
+            conn.cursor().execute("UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?", (now, session_id))
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass
+
+
+def revoke_auth_session(token: str | None) -> None:
+    if not token:
+        return
+    try:
+        token_hash = _hash_auth_token(token)
+        if use_supabase():
+            get_supabase_client().table("auth_sessions").update({"revoked": True}).eq("token_hash", token_hash).execute()
+        else:
+            conn = get_db_connection()
+            _ensure_sqlite_auth_sessions(conn)
+            conn.cursor().execute("UPDATE auth_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
+            conn.commit()
+            conn.close()
+    except Exception:
+        pass
+
+
+def _queue_cookie_set(token: str) -> None:
+    st.session_state["_pending_cookie_set"] = token
+    st.session_state.pop("_pending_cookie_clear", None)
+
+
+def _queue_cookie_clear() -> None:
+    st.session_state["_pending_cookie_clear"] = True
+    st.session_state.pop("_pending_cookie_set", None)
+
+
+def _establish_session(display: str, role: str, token: str | None = None) -> None:
+    st.session_state.logged_in = True
+    st.session_state.username = display
+    st.session_state.role = role
+    st.session_state.auth_token = token or ""
+
+
+def try_restore_login_from_cookie() -> None:
+    """Auto-login from a valid stay-logged-in cookie. Does not write login_events."""
+    if st.session_state.get("logged_in"):
+        return
+    if st.session_state.get("_pending_cookie_clear"):
+        return
+    token = _read_auth_cookie()
+    if not token:
+        return
+    row = lookup_auth_session(token)
+    if not row:
+        _queue_cookie_clear()
+        return
+    display = row["username"]
+    role = _club_role(display)
+    if not role:
+        _queue_cookie_clear()
+        return
+    _establish_session(display, role, token)
+    touch_auth_session(row.get("id"))
+
+
+def logout_user() -> None:
+    token = st.session_state.get("auth_token") or _read_auth_cookie()
+    revoke_auth_session(token)
+    _queue_cookie_clear()
+    for k in ["logged_in", "username", "role", "auth_token"]:
+        st.session_state[k] = "" if k != "logged_in" else False
+
+
 def show_login():
     # Professional centered logo + title
     st.markdown("<br><br>", unsafe_allow_html=True)
-    
+
     if LOGO_PATH.exists():
         col1, col2, col3 = st.columns([1, 1.7, 1])
         with col2:
@@ -1642,44 +1943,36 @@ def show_login():
             )
     else:
         st.markdown("<h1 style='text-align:center;'>DD Hunt Tracker</h1>", unsafe_allow_html=True)
-    
+
     st.markdown("### Secure Club Access")
     with st.form("login"):
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
+        u = st.text_input("Username", autocomplete="username")
+        p = st.text_input("Password", type="password", autocomplete="current-password")
+        stay = st.checkbox("Stay logged in", value=True)
         if st.form_submit_button("Login", use_container_width=True):
-            USERS = {
-                "jeff": {"pw": "duckhunt", "role": "admin"},
-                "jeffery.utley@gmail.com": {"pw": "duckhunt", "role": "admin"},
-                "admin@ddhunt.com": {"pw": "duckhunt", "role": "admin"},
-                "andrew": {"pw": "andrew123", "role": "admin"},
-                "kyle": {"pw": "kyle123", "role": "admin"},
-                "adam": {"pw": "adam123", "role": "admin"},
-                "justin": {"pw": "justin123", "role": "admin"},
-                "mcguire": {"pw": "mcguire123", "role": "admin"},
-                "caleb": {"pw": "caleb123", "role": "admin"},
-                "calebjutley@icloud.com": {"pw": "caleb123", "role": "admin"},
-                "penick": {"pw": "penick123", "role": "admin"},
-                "penick.river@icloud.com": {"pw": "penick123", "role": "admin"},
-                "river": {"pw": "river123", "role": "admin"},
-            }
             key = (u or "").strip().lower()
-            if key in USERS and USERS[key]["pw"] == p:
-                st.session_state.logged_in = True
-                # Prefer short display name when email alias is used
-                display = {
-                    "jeffery.utley@gmail.com": "jeff",
-                    "admin@ddhunt.com": "jeff",
-                    "calebjutley@icloud.com": "caleb",
-                    "penick.river@icloud.com": "penick",
-                }.get(key, key)
-                st.session_state.username = display
-                st.session_state.role = USERS[key]["role"]
+            rec = CLUB_USERS.get(key)
+            if rec and rec["pw"] == p:
+                display = _club_display_name(key)
+                token = None
+                if stay:
+                    old = _read_auth_cookie()
+                    if old:
+                        revoke_auth_session(old)
+                    token = issue_auth_session(display)
+                    if token:
+                        _queue_cookie_set(token)
+                else:
+                    old = _read_auth_cookie()
+                    if old:
+                        revoke_auth_session(old)
+                    _queue_cookie_clear()
+                _establish_session(display, rec["role"], token)
                 record_login(display, login_key=key)
                 st.rerun()
             else:
                 st.error("Invalid login. Please use your assigned username and password.")
-    st.caption("Sign in with your email or club username.")
+    st.caption("Sign in with your email or club username. Stay logged in keeps you signed in on this phone or computer for 30 days.")
 
 
 # ---------------- MAIN APP ----------------
@@ -1691,6 +1984,10 @@ def main():
         st.session_state.logged_in = False
         st.session_state.username = ""
         st.session_state.role = ""
+        st.session_state.auth_token = ""
+
+    try_restore_login_from_cookie()
+    _apply_pending_cookie_js()
 
     if not st.session_state.logged_in:
         show_login()
@@ -1703,9 +2000,14 @@ def main():
 
     st.sidebar.divider()
     st.sidebar.success(f"👤 {st.session_state.username} ({st.session_state.role})")
+    if st.sidebar.button("🔄 Refresh", use_container_width=True):
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+        st.rerun()
     if st.sidebar.button("Logout", use_container_width=True):
-        for k in ["logged_in", "username", "role"]:
-            st.session_state[k] = "" if k != "logged_in" else False
+        logout_user()
         st.rerun()
 
     st.sidebar.caption("📱 Mobile-friendly • Install as PWA via browser menu for app-like experience on phone/tablet.")
