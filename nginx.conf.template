@@ -29,7 +29,7 @@ http {
         listen       ${PORT};
         server_name  _;
 
-        # Home-screen / favicon assets at site root (iOS requests these)
+        # Home-screen / favicon / manifest assets at site root (iOS requests these)
         location = /apple-touch-icon.png {
             alias /app/static-icons/apple-touch-icon.png;
             add_header Cache-Control "public, max-age=86400";
@@ -49,6 +49,36 @@ http {
             alias /app/static-icons/favicon.ico;
             add_header Cache-Control "public, max-age=86400";
             default_type image/x-icon;
+        }
+        location = /favicon.png {
+            alias /app/static-icons/favicon.png;
+            add_header Cache-Control "public, max-age=86400";
+            default_type image/png;
+        }
+        location = /icon-192.png {
+            alias /app/static-icons/icon-192.png;
+            add_header Cache-Control "public, max-age=86400";
+            default_type image/png;
+        }
+        location = /icon-512.png {
+            alias /app/static-icons/icon-512.png;
+            add_header Cache-Control "public, max-age=86400";
+            default_type image/png;
+        }
+        location = /manifest.webmanifest {
+            alias /app/static-icons/manifest.webmanifest;
+            add_header Cache-Control "public, max-age=86400";
+            default_type application/manifest+json;
+        }
+        location = /manifest.json {
+            alias /app/static-icons/manifest.webmanifest;
+            add_header Cache-Control "public, max-age=86400";
+            default_type application/manifest+json;
+        }
+        location = /site.webmanifest {
+            alias /app/static-icons/manifest.webmanifest;
+            add_header Cache-Control "public, max-age=86400";
+            default_type application/manifest+json;
         }
 
         # Streamlit websocket
@@ -72,7 +102,14 @@ http {
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $connection_upgrade;
             proxy_read_timeout 86400;
-            proxy_buffering off;
+            # Buffering on so sub_filter can rewrite the HTML head. Websockets
+            # are handled in /_stcore/stream and are unaffected.
+            proxy_buffering on;
+            # Streamlit gzips HTML; sub_filter only works on uncompressed text
+            proxy_set_header Accept-Encoding "";
+            sub_filter_once on;
+            sub_filter_types text/html;
+            sub_filter '</head>' '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=20261116"><link rel="apple-touch-icon-precomposed" href="/apple-touch-icon-precomposed.png?v=20261116"><link rel="icon" type="image/png" href="/favicon.png?v=20261116"><link rel="manifest" href="/manifest.webmanifest"><meta name="apple-mobile-web-app-title" content="DD Hunt Tracker"><meta name="application-name" content="DD Hunt Tracker"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#1B3A2A"></head>';
         }
     }
 }

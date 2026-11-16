@@ -14,8 +14,10 @@ COPY dd_logo.png .
 COPY farm_maps ./farm_maps
 COPY supabase_farm_plans.sql .
 
-# Icons served by nginx at site root
-COPY apple-touch-icon.png apple-touch-icon-precomposed.png apple-touch-icon-120x120.png favicon.ico /app/static-icons/
+# Icons and manifest served by nginx at site root
+COPY apple-touch-icon.png apple-touch-icon-precomposed.png apple-touch-icon-120x120.png \
+     favicon.ico favicon.png icon-192.png icon-512.png manifest.webmanifest \
+     /app/static-icons/
 COPY nginx.conf.template /app/nginx.conf.template
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
