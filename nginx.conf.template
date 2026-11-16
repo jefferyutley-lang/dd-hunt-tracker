@@ -111,7 +111,7 @@ http {
             proxy_set_header Accept-Encoding "";
             sub_filter_once on;
             sub_filter_types text/html;
-            sub_filter '</head>' '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=20261116"><link rel="apple-touch-icon-precomposed" href="/apple-touch-icon-precomposed.png?v=20261116"><link rel="icon" type="image/png" href="/favicon.png?v=20261116"><link rel="manifest" href="/manifest.webmanifest"><meta name="apple-mobile-web-app-title" content="DD Hunt Tracker"><meta name="application-name" content="DD Hunt Tracker"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#1B3A2A"></head>';
+            sub_filter '</head>' '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=20261116icon"><link rel="apple-touch-icon-precomposed" href="/apple-touch-icon-precomposed.png?v=20261116icon"><link rel="icon" type="image/png" href="/favicon.png?v=20261116icon"><link rel="manifest" href="/manifest.webmanifest"><meta name="apple-mobile-web-app-title" content="DD Hunt Tracker"><meta name="application-name" content="DD Hunt Tracker"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#1B3A2A"></head>';
         }
     }
 }
