@@ -2176,50 +2176,61 @@ def main():
 
 
         with tab_runs:
-            with st.expander("➕ Add well run", expanded=False):
-                with st.form("pump_add_form", clear_on_submit=True):
-                    new = well_run_form("pump_add")
-                    if st.form_submit_button("💾 Save run", use_container_width=True):
-                        try:
-                            new["created_by"] = st.session_state.username
-                            save_well_run(new)
-                            st.success("Well run saved")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Save failed: {e}")
-            if not runs:
-                st.info("No well runs yet.")
-            else:
-                st.dataframe(pd.DataFrame([{
-                    "Year": _run_year(r), "Well": r.get("well"),
-                    "Turned on": f"{r.get('on_date') or ''} {_fmt_t(r.get('on_time'))}".strip(),
-                    "Turned off": f"{r.get('off_date') or ''} {_fmt_t(r.get('off_time'))}".strip(),
-                    "Days run": _run_status(r),
-                    "Total Runtime (hrs)": (round(_run_hours(r), 1) if _run_hours(r) is not None else None),
-                    "Notes": r.get("notes") or "",
-                } for r in runs]), use_container_width=True, hide_index=True)
-                labels = {f"{r.get('well')} — on {r.get('on_date') or '?'} (#{r['id']})": r for r in runs}
-                pick = st.selectbox("Edit or delete a run", list(labels), key="pump_pick")
-                sel = labels[pick]
-                t_edit, t_del = st.tabs(["✏️ Edit", "🗑️ Delete"])
-                with t_edit:
-                    with st.form(f"pump_edit_{sel['id']}"):
-                        upd = well_run_form(f"pump_edit_{sel['id']}", sel)
-                        if st.form_submit_button("💾 Update run", use_container_width=True):
+            col_wells, col_strategy = st.columns([2, 1], gap="large")
+            with col_strategy:
+                with st.container(border=True):
+                    st.subheader("Strategy")
+                    st.markdown(
+                        "- Once a field has reached the last board, you should consider it full unless you can stay overnight.\n"
+                        "- Ideally members should go every three days to check.\n"
+                        "- Always pump into Pool 1 or Money. That gives you more options, as the well will produce more water than can go through the gate.\n"
+                        "- Make sure all inner gates have all boards removed."
+                    )
+            with col_wells:
+                with st.expander("➕ Add well run", expanded=False):
+                    with st.form("pump_add_form", clear_on_submit=True):
+                        new = well_run_form("pump_add")
+                        if st.form_submit_button("💾 Save run", use_container_width=True):
                             try:
-                                save_well_run(upd, run_id=sel["id"])
-                                st.success("Updated")
+                                new["created_by"] = st.session_state.username
+                                save_well_run(new)
+                                st.success("Well run saved")
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Update failed: {e}")
-                with t_del:
-                    if st.button("🗑️ Delete this run", key=f"pump_del_{sel['id']}", use_container_width=True):
-                        try:
-                            delete_well_run(sel["id"])
-                            st.success("Deleted")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Delete failed: {e}")
+                                st.error(f"Save failed: {e}")
+                if not runs:
+                    st.info("No well runs yet.")
+                else:
+                    st.dataframe(pd.DataFrame([{
+                        "Year": _run_year(r), "Well": r.get("well"),
+                        "Turned on": f"{r.get('on_date') or ''} {_fmt_t(r.get('on_time'))}".strip(),
+                        "Turned off": f"{r.get('off_date') or ''} {_fmt_t(r.get('off_time'))}".strip(),
+                        "Days run": _run_status(r),
+                        "Total Runtime (hrs)": (round(_run_hours(r), 1) if _run_hours(r) is not None else None),
+                        "Notes": r.get("notes") or "",
+                    } for r in runs]), use_container_width=True, hide_index=True)
+                    labels = {f"{r.get('well')} — on {r.get('on_date') or '?'} (#{r['id']})": r for r in runs}
+                    pick = st.selectbox("Edit or delete a run", list(labels), key="pump_pick")
+                    sel = labels[pick]
+                    t_edit, t_del = st.tabs(["✏️ Edit", "🗑️ Delete"])
+                    with t_edit:
+                        with st.form(f"pump_edit_{sel['id']}"):
+                            upd = well_run_form(f"pump_edit_{sel['id']}", sel)
+                            if st.form_submit_button("💾 Update run", use_container_width=True):
+                                try:
+                                    save_well_run(upd, run_id=sel["id"])
+                                    st.success("Updated")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Update failed: {e}")
+                    with t_del:
+                        if st.button("🗑️ Delete this run", key=f"pump_del_{sel['id']}", use_container_width=True):
+                            try:
+                                delete_well_run(sel["id"])
+                                st.success("Deleted")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Delete failed: {e}")
 
             st.subheader("Pumping by year")
             wrows = []
