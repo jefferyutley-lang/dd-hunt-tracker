@@ -14,7 +14,8 @@ streamlit run /app/app.py \
   --server.headless=true \
   --browser.gatherUsageStats=false \
   --server.enableCORS=false \
-  --server.enableXsrfProtection=false &
+  --server.enableXsrfProtection=false \
+  --server.disconnectedSessionTTL=43200 &
 STREAMLIT_PID=$!
 
 # Wait briefly for Streamlit to bind

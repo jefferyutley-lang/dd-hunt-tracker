@@ -10,6 +10,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+COPY .streamlit/config.toml /app/.streamlit/config.toml
 COPY dd_logo.png .
 COPY farm_maps ./farm_maps
 COPY supabase_farm_plans.sql .
