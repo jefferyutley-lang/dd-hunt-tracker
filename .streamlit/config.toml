@@ -1,0 +1,4 @@
+[server]
+# Keep login/session_state after the websocket drops (phone lock, tab
+# backgrounded, brief network loss). Default is 120 seconds.
+disconnectedSessionTTL = 43200
