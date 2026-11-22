@@ -333,6 +333,14 @@ def get_db_connection():
     return conn
 
 
+CLUB_TZ = ZoneInfo("America/Chicago")
+
+
+def club_today() -> date:
+    """Today in the club's time zone (server runs on UTC)."""
+    return datetime.now(CLUB_TZ).date()
+
+
 def get_season_from_date(d: date) -> str:
     """Duck season: Sept–Feb typical. Returns 'YYYY-YYYY' string."""
     year = d.year
@@ -724,7 +732,7 @@ def get_weather_open_meteo(target_date: date, lat: float = 36.68218, lon: float 
     - If date == today: Use forecast API to get rainfall so far today + daily values
     - If date is in the past: Use historical archive API for accurate full-day rainfall
     """
-    today = date.today()
+    today = club_today()
     try:
         if target_date == today:
             # Today → use forecast for "rainfall so far today"
@@ -805,7 +813,7 @@ def get_rainfall_open_meteo(target_date: date, lat: float = 36.68218, lon: float
     - Past: full-day precipitation_sum from the historical archive
     Returns None on failure / future dates / API errors (including rate limits).
     """
-    today = date.today()
+    today = club_today()
     if target_date > today:
         return None
     try:
@@ -941,7 +949,7 @@ def generate_pdf_report(period_label: str, df: pd.DataFrame, species_totals: dic
 
     pdf.set_font("Helvetica", "I", 8)
     pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 6, f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  -  DD Hunt Tracker  -  Private Club Use Only", ln=True, align="C")
+    pdf.cell(0, 6, f"Generated {datetime.now(CLUB_TZ).strftime('%Y-%m-%d %H:%M')}  -  DD Hunt Tracker  -  Private Club Use Only", ln=True, align="C")
 
     pdf.output(str(output_path))
     return output_path
@@ -1282,7 +1290,7 @@ def farm_activity_form(prefix: str, cur: dict | None = None) -> dict:
     act = c1.selectbox("Activity", FARM_ACTIVITIES, key=f"{prefix}_act",
                        index=FARM_ACTIVITIES.index(cur["activity"]) if cur.get("activity") in FARM_ACTIVITIES else 0)
     d = c2.date_input("Date", key=f"{prefix}_date",
-                      value=date.fromisoformat(str(cur["activity_date"])[:10]) if cur.get("activity_date") else date.today())
+                      value=date.fromisoformat(str(cur["activity_date"])[:10]) if cur.get("activity_date") else club_today())
     field = st.text_input("Field / area (optional)", value=cur.get("field") or "", key=f"{prefix}_field")
     notes = st.text_area("Notes (optional)", value=cur.get("notes") or "", key=f"{prefix}_notes", height=80)
     return {"activity": act, "activity_date": d.isoformat(), "field": field.strip(), "notes": notes.strip()}
@@ -1378,7 +1386,7 @@ def get_monthly_rainfall_open_meteo(year: int, lat: float = 36.68218, lon: float
     """{month: inches} for Jul-Oct of a year from Open-Meteo archive (same farm coords as hunt rainfall)."""
     import calendar
     start = date(year, 7, 1)
-    end = min(date(year, 10, 31), date.today() - timedelta(days=1))
+    end = min(date(year, 10, 31), club_today() - timedelta(days=1))
     if end < start:
         return {}
     try:
@@ -1414,7 +1422,7 @@ def _run_status(r: dict) -> str:
         return f"{d} days"
     if r.get("on_date") and not r.get("off_date"):
         try:
-            so_far = (date.today() - date.fromisoformat(str(r["on_date"])[:10])).days
+            so_far = (club_today() - date.fromisoformat(str(r["on_date"])[:10])).days
             return f"running ({so_far} days so far)"
         except Exception:
             return "running"
@@ -1609,7 +1617,7 @@ def maintenance_form(prefix: str, assets: list[dict], existing: dict | None = No
                        index=ids.index(ex["asset_id"]) if ex.get("asset_id") in ids else 0, key=f"{prefix}_asset")
     c1, c2 = st.columns(2)
     sd = ex.get("service_date")
-    sdate = c1.date_input("Service date *", value=date.fromisoformat(str(sd)[:10]) if sd else date.today(), key=f"{prefix}_date")
+    sdate = c1.date_input("Service date *", value=date.fromisoformat(str(sd)[:10]) if sd else club_today(), key=f"{prefix}_date")
     stype = c2.selectbox("Service type *", SERVICE_TYPES,
                          index=SERVICE_TYPES.index(ex["service_type"]) if ex.get("service_type") in SERVICE_TYPES else 0, key=f"{prefix}_type")
     c3, c4, c5 = st.columns(3)
@@ -1931,7 +1939,7 @@ def main():
 
         col_date, col_btn = st.columns([1.8, 2.2])
         with col_date:
-            hunt_date = st.date_input("Hunt Date *", value=date.today(), key="hunt_date_input")
+            hunt_date = st.date_input("Hunt Date *", value=club_today(), key="hunt_date_input")
         with col_btn:
             if st.button("🔄 Auto Weather", use_container_width=True, type="secondary"):
                 with st.spinner("Contacting New Madrid gauge + Open-Meteo for your farm..."):
@@ -2070,7 +2078,7 @@ def main():
         with st.form("wildlife_survey_form", clear_on_submit=True):
             c1, c2 = st.columns(2)
             with c1:
-                survey_date = st.date_input("Date", value=date.today(), key="survey_date")
+                survey_date = st.date_input("Date", value=club_today(), key="survey_date")
             with c2:
                 location = location_picker(
                     label="Location *",
@@ -2143,7 +2151,7 @@ def main():
             "Year",
             min_value=2000,
             max_value=2100,
-            value=datetime.now().year,
+            value=club_today().year,
             step=1,
             key="farm_plan_year",
         )
@@ -2182,7 +2190,7 @@ def main():
         st.subheader("🚜 Field work log")
         st.caption("Planting, coffee bean spraying, brushing, and disking dates.")
         acts = get_farm_activities()
-        this_year = datetime.now().year
+        this_year = club_today().year
         cols = st.columns(len(FARM_ACTIVITIES))
         for c, a in zip(cols, FARM_ACTIVITIES):
             ds = [str(r["activity_date"])[:10] for r in acts if r["activity"] == a and r["year"] == this_year]
@@ -2275,7 +2283,7 @@ def main():
         runs = get_well_runs()
         overrides = get_rainfall_overrides()
         run_years = {y for y in (_run_year(r) for r in runs) if y}
-        years = sorted(run_years | {y for y, _ in overrides} | set(range(datetime.now().year - 2, datetime.now().year + 1)), reverse=True)
+        years = sorted(run_years | {y for y, _ in overrides} | set(range(club_today().year - 2, club_today().year + 1)), reverse=True)
 
         def _rain_for(y):
             auto = get_monthly_rainfall_open_meteo(y)
@@ -2356,7 +2364,7 @@ def main():
                     for r in wr:
                         d = _run_days(r)
                         if d is None and r.get("on_date") and not r.get("off_date"):
-                            d = (date.today() - date.fromisoformat(str(r["on_date"])[:10])).days
+                            d = (club_today() - date.fromisoformat(str(r["on_date"])[:10])).days
                         days += d or 0
                     ons = sorted(str(r["on_date"])[:10] for r in wr if r.get("on_date"))
                     row[f"{w} days"] = days
@@ -2379,7 +2387,7 @@ def main():
                 rrows.append(row)
             st.dataframe(pd.DataFrame(rrows), use_container_width=True, hide_index=True)
             st.markdown("**Enter or edit a gauge reading**")
-            ry = int(st.number_input("Year", min_value=2000, max_value=2100, value=datetime.now().year, step=1, key="pump_rain_year"))
+            ry = int(st.number_input("Year", min_value=2000, max_value=2100, value=club_today().year, step=1, key="pump_rain_year"))
             vals, src = _rain_for(ry)
             st.caption("Auto-filled from Open-Meteo for the farm. Enter a gauge reading to override; clear it to go back to auto.")
             for m, name in RAIN_MONTHS.items():
@@ -2465,7 +2473,7 @@ def main():
                              "Last service": str(last["service_date"])[:10] if last else "—",
                              "Type": last["service_type"] if last else "",
                              "Meter": f"{_num(last.get('meter_reading')):g} {a.get('meter_unit') or ''}".strip() if last and _num(last.get("meter_reading")) is not None else "",
-                             "Days since": (date.today() - date.fromisoformat(str(last["service_date"])[:10])).days if last else None})
+                             "Days since": (club_today() - date.fromisoformat(str(last["service_date"])[:10])).days if last else None})
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
             pu = next((a for a in assets if a["name"].strip().lower() == "power unit"), None)
             if pu:
