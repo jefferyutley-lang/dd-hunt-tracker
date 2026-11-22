@@ -17,7 +17,6 @@ import os
 import json
 import secrets
 import hashlib
-from fpdf import FPDF
 import requests
 import streamlit.components.v1 as components
 
@@ -885,76 +884,6 @@ def render_species_input_grid(defaults: dict | None = None, key_prefix: str = "s
     return counts
 
 
-def generate_pdf_report(period_label: str, df: pd.DataFrame, species_totals: dict, output_path: Path):
-    """Create professional PDF report with logo."""
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-
-    # Logo header
-    if LOGO_PATH.exists():
-        pdf.image(str(LOGO_PATH), x=10, y=8, w=35)
-
-    pdf.set_font("Helvetica", "B", 22)
-    pdf.set_text_color(30, 60, 90)
-    pdf.cell(0, 12, "DD Hunt Report", ln=True, align="C")
-    pdf.set_font("Helvetica", "", 12)
-    pdf.set_text_color(80, 80, 80)
-    pdf.cell(0, 7, f"Period: {period_label}", ln=True, align="C")
-    pdf.ln(8)
-
-    # Summary box
-    pdf.set_fill_color(240, 248, 255)
-    pdf.set_font("Helvetica", "B", 13)
-    pdf.cell(0, 8, "Season Highlights", ln=True, fill=True)
-    pdf.set_font("Helvetica", "", 11)
-    total_ducks = int(df["daily_total"].sum()) if not df.empty else 0
-    pdf.cell(0, 7, f"- Total Ducks Harvested: {total_ducks:,}", ln=True)
-    pdf.cell(0, 7, f"- Hunting Days: {len(df)}", ln=True)
-    if not df.empty:
-        pdf.cell(0, 7, f"- Average Daily Bag: {df['daily_total'].mean():.1f}", ln=True)
-        pdf.cell(0, 7, f"- Best Day: {int(df['daily_total'].max())} ducks", ln=True)
-    pdf.ln(6)
-
-    # Hunt table
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Detailed Hunt Log", ln=True)
-    pdf.set_font("Helvetica", "B", 9)
-    col_widths = [22, 45, 14, 55, 40]
-    headers = ["Date", "Location", "Ducks", "Hunters", "Weather/River"]
-    for i, h in enumerate(headers):
-        pdf.cell(col_widths[i], 7, h, border=1, align="C")
-    pdf.ln()
-    pdf.set_font("Helvetica", "", 8)
-    for _, row in df.iterrows():
-        pdf.cell(col_widths[0], 6, str(row["date"]), border=1)
-        pdf.cell(col_widths[1], 6, str(row.get("location", ""))[:28], border=1)
-        pdf.cell(col_widths[2], 6, str(int(row["daily_total"])), border=1, align="C")
-        hunters = str(row.get("hunters", ""))[:32]
-        pdf.cell(col_widths[3], 6, hunters, border=1)
-        weather = f"{row.get('wind','')[:18]} / {row.get('river_level','')[:12]}"
-        pdf.cell(col_widths[4], 6, weather, border=1)
-        pdf.ln()
-    pdf.ln(5)
-
-    # Species summary
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Species Breakdown", ln=True)
-    pdf.set_font("Helvetica", "", 10)
-    sorted_species = sorted(species_totals.items(), key=lambda x: -x[1])
-    for sp, cnt in sorted_species:
-        if cnt > 0:
-            pdf.cell(0, 6, f"   {sp}: {cnt} birds", ln=True)
-    pdf.ln(6)
-
-    pdf.set_font("Helvetica", "I", 8)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 6, f"Generated {datetime.now(CLUB_TZ).strftime('%Y-%m-%d %H:%M')}  -  DD Hunt Tracker  -  Private Club Use Only", ln=True, align="C")
-
-    pdf.output(str(output_path))
-    return output_path
-
-
 def _wildlife_species_category(species: str) -> str:
     """Map species name to Supabase wildlife_survey_sightings.category."""
     sp = (species or "").strip()
@@ -1792,6 +1721,66 @@ def show_login():
 
 
 # ---------------- MAIN APP ----------------
+def gather_report_data() -> dict:
+    """Live data for reports.py, from the same getters the pages use."""
+    runs = get_well_runs()
+    overrides = get_rainfall_overrides()
+    this_year = club_today().year
+    years = sorted({y for y in (_run_year(r) for r in runs) if y} | {y for y, _ in overrides}
+                   | set(range(this_year - 2, this_year + 1)))
+    rain = {}
+    for y in years:
+        auto = get_monthly_rainfall_open_meteo(y)
+        vals, src = {}, {}
+        for m in RAIN_MONTHS:
+            if (y, m) in overrides:
+                vals[m], src[m] = overrides[(y, m)], "gauge"
+            elif m in auto:
+                vals[m], src[m] = auto[m], "auto"
+        rain[y] = {"vals": vals, "src": src}
+    return {
+        "surveys": get_all_wildlife_surveys_df(),
+        "farm_activities": get_farm_activities(),
+        "farm_plans": {this_year: get_farm_plans_for_year(this_year)},
+        "farm_year": this_year,
+        "well_runs": runs,
+        "rainfall": rain,
+        "assets": get_assets(),
+        "maintenance_log": get_maintenance_log(),
+    }
+
+
+def build_report_file(kind: str, hunts: pd.DataFrame, season: str) -> tuple[bytes, str, str]:
+    """Build one report on demand. reports.py (and matplotlib) load only here."""
+    import gc
+    import reports
+
+    slug = "All_Seasons" if season == "All" else season
+    stamp = club_today().strftime("%Y%m%d")
+    pdf = "application/pdf"
+    try:
+        if kind == "master":
+            data = gather_report_data()
+            data["hunts"] = hunts
+            out, _skipped = reports.build_master_report(data, season)
+            return out, f"DD_Master_Report_{slug}_{stamp}.pdf", pdf
+        if kind == "club":
+            return reports.build_club_report(hunts, season), f"DD_Club_Report_{slug}_{stamp}.pdf", pdf
+        if kind == "history_pdf":
+            return reports.build_history_report(hunts, season), f"DD_Hunt_History_{slug}_{stamp}.pdf", pdf
+        if kind == "history_xlsx":
+            return (reports.build_excel_workbook(hunts, season), f"DD_Hunt_History_{slug}_{stamp}.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        if kind == "ebird_pdf":
+            return reports.build_ebird_report(hunts, season), f"DD_eBird_Checklist_{slug}_{stamp}.pdf", pdf
+        if kind == "ebird_csv":
+            h = hunts if season == "All" else hunts[hunts["season"] == season]
+            return reports.ebird_csv(h).encode("utf-8"), f"dd_lodge_ebird_checklist_{slug}_{stamp}.csv", "text/csv"
+        raise ValueError(f"Unknown report: {kind}")
+    finally:
+        gc.collect()
+
+
 def main():
     init_db()
 
@@ -2708,13 +2697,14 @@ def main():
     # ========== REPORTS ==========
     elif page == "Reports & Exports":
         st.title("📊 Reports & Exports")
-        st.caption("Generate professional summaries for the club or export data for eBird.")
+        st.caption("Reports with the app's charts, cards and tables — built from live data when you tap a button.")
 
         df = get_all_hunts_df()
         if df.empty:
             st.info("No data for reports yet.")
             return
 
+        hunts_all = df
         seasons = ["All"] + sorted(df["season"].dropna().unique().tolist(), reverse=True)
         sel_s = st.selectbox("Season for report", seasons, index=0)
         if sel_s != "All":
@@ -2722,25 +2712,38 @@ def main():
 
         period_label = sel_s if sel_s != "All" else "All Seasons"
 
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("📄 Generate PDF Club Report", use_container_width=True):
-                species_tot = {sp: int(df[SPECIES_COLS[sp]].sum()) for sp in SPECIES}
-                pdf_path = BASE_DIR / f"DD_Lodge_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
-                generate_pdf_report(period_label, df, species_tot, pdf_path)
-                with open(pdf_path, "rb") as f:
-                    st.download_button("⬇️ Download PDF", f.read(), pdf_path.name, "application/pdf", use_container_width=True)
-
-        with c2:
-            if st.button("🐦 Export eBird-style Checklist CSV", use_container_width=True):
-                lines = ["Common Name,Count,Date,Location,Protocol,Notes\n"]
-                for _, r in df.iterrows():
-                    for sp in SPECIES:
-                        cnt = r.get(SPECIES_COLS[sp], 0)
-                        if cnt > 0:
-                            lines.append(f'"{sp}",{cnt},{r["date"]},"{r.get("location","")}","Stationary","From DD Lodge hunt log"\n')
-                csv_text = "".join(lines)
-                st.download_button("⬇️ Download eBird CSV", csv_text, "dd_lodge_ebird_checklist.csv", "text/csv", use_container_width=True)
+        st.subheader("📄 Reports with charts")
+        st.caption(
+            f"Hunting sections use **{period_label}**. The Master Report also covers wildlife surveys, "
+            "farm plans, pumping, rainfall and maintenance (all years)."
+        )
+        report_buttons = [
+            ("master", "🗂️ Master Report (PDF)", "Everything in the app in one PDF"),
+            ("club", "📄 Club Report (PDF)", "Dashboard, analytics, breakdowns and hunt log"),
+            ("history_pdf", "📋 Hunt History (PDF)", "Pivot charts and tables plus the full hunt log"),
+            ("history_xlsx", "📊 Hunt History (Excel, with charts)", "Spreadsheet with built-in charts"),
+            ("ebird_pdf", "🐦 eBird Checklist (PDF)", "Species summary with charts"),
+            ("ebird_csv", "🐦 eBird Checklist (CSV)", "For importing into eBird"),
+        ]
+        bcols = st.columns(2)
+        for i, (rkey, rlabel, rhelp) in enumerate(report_buttons):
+            if bcols[i % 2].button(rlabel, key=f"rep_btn_{rkey}", help=rhelp, use_container_width=True):
+                st.session_state.pop("report_ready", None)
+                with st.spinner("Building report…"):
+                    try:
+                        payload, fname, mime = build_report_file(rkey, hunts_all, sel_s)
+                        st.session_state["report_ready"] = {
+                            "season": sel_s, "label": rlabel, "data": payload, "name": fname, "mime": mime,
+                        }
+                    except Exception as e:
+                        st.error(f"Could not build the report: {e}")
+        ready = st.session_state.get("report_ready")
+        if ready and ready.get("season") == sel_s:
+            st.success(f"{ready['label']} is ready.")
+            st.download_button(
+                f"⬇️ Download {ready['name']}", ready["data"], ready["name"], ready["mime"],
+                use_container_width=True, type="primary", key="rep_download",
+            )
 
         st.info("**eBird tip:** The CSV is formatted for easy import into eBird. Adjust 'Protocol' or add exact location coordinates as needed before uploading.")
 

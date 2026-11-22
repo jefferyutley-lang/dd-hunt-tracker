@@ -5,3 +5,5 @@ plotly
 fpdf2
 python-dotenv
 requests
+matplotlib
+openpyxl

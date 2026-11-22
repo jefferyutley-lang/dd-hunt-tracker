@@ -25,14 +25,23 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import matplotlib
+import pandas as pd
+from fpdf import FPDF, XPos, YPos
+from fpdf.fonts import FontFace
 
-matplotlib.use("Agg")
-import matplotlib.dates as mdates  # noqa: E402
-import matplotlib.pyplot as plt  # noqa: E402
-import pandas as pd  # noqa: E402
-from fpdf import FPDF, XPos, YPos  # noqa: E402
-from fpdf.fonts import FontFace  # noqa: E402
+# matplotlib is imported lazily (first chart only, Agg backend) to keep app memory low.
+plt = None
+mdates = None
+
+
+def _mpl():
+    global plt, mdates
+    if plt is None:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.dates as _md
+        import matplotlib.pyplot as _plt
+        plt, mdates = _plt, _md
 
 BASE_DIR = Path(__file__).parent
 LOGO_PATH = BASE_DIR / "dd_logo.png"
@@ -193,6 +202,7 @@ def _style(ax, title=None):
 def _png(fig) -> io.BytesIO:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor="white")
+    fig.clf()
     plt.close(fig)
     gc.collect()
     buf.seek(0)
@@ -200,6 +210,7 @@ def _png(fig) -> io.BytesIO:
 
 
 def _fig(w=7.2, h=3.0):
+    _mpl()
     fig, ax = plt.subplots(figsize=(w, h))
     fig.patch.set_facecolor("white")
     return fig, ax
