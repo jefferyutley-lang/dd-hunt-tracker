@@ -9,7 +9,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py club_auth.py login_server.py login.html .
+# Reports: matplotlib (Agg) font cache built at image time so the first report is quick
+ENV MPLBACKEND=Agg MPLCONFIGDIR=/app/.mplconfig
+RUN python -c "import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot"
+
+COPY app.py club_auth.py reports.py login_server.py login.html .
 COPY .streamlit/config.toml /app/.streamlit/config.toml
 COPY dd_logo.png .
 COPY farm_maps ./farm_maps
