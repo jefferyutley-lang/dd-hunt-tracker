@@ -81,6 +81,24 @@ http {
             default_type application/manifest+json;
         }
 
+        # Native HTML login / logout (real form POST + 303 for iOS Keychain)
+        location = /login {
+            proxy_pass http://127.0.0.1:8502;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Cookie $http_cookie;
+        }
+        location = /logout {
+            proxy_pass http://127.0.0.1:8502;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Cookie $http_cookie;
+        }
+
         # Streamlit websocket
         location /_stcore/stream {
             proxy_pass http://127.0.0.1:8501;
@@ -92,6 +110,42 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_read_timeout 86400;
             proxy_send_timeout 86400;
+        }
+
+        # Health check and other Streamlit _stcore paths (no login redirect)
+        location /_stcore/ {
+            proxy_pass http://127.0.0.1:8501;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_read_timeout 86400;
+            proxy_send_timeout 86400;
+        }
+
+        # Unauthenticated document requests for / go to the HTML login page.
+        # A present cookie (valid or not) is passed through so Streamlit can
+        # restore a session or send the member to /logout.
+        location = / {
+            if ($cookie_dd_stay = "") {
+                return 302 /login;
+            }
+            proxy_pass http://127.0.0.1:8501;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_read_timeout 86400;
+            proxy_send_timeout 86400;
+            proxy_buffering on;
+            proxy_set_header Accept-Encoding "";
+            sub_filter_once on;
+            sub_filter_types text/html;
+            sub_filter '</head>' '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=20261116icon"><link rel="apple-touch-icon-precomposed" href="/apple-touch-icon-precomposed.png?v=20261116icon"><link rel="icon" type="image/png" href="/favicon.png?v=20261116icon"><link rel="manifest" href="/manifest.webmanifest"><meta name="apple-mobile-web-app-title" content="DD Hunt Tracker"><meta name="application-name" content="DD Hunt Tracker"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#1B3A2A"></head>';
         }
 
         location / {

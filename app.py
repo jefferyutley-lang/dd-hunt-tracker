@@ -21,6 +21,19 @@ from fpdf import FPDF
 import requests
 import streamlit.components.v1 as components
 
+from club_auth import (
+    AUTH_COOKIE,
+    AUTH_DAYS,
+    CLUB_USERS,
+    club_display_name as _club_display_name,
+    club_role as _club_role,
+    issue_auth_session,
+    lookup_auth_session,
+    record_login,
+    revoke_auth_session,
+    touch_auth_session,
+)
+
 # ---------------- CONFIG ----------------
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "duck_hunt.db"
@@ -1609,98 +1622,8 @@ def maintenance_form(prefix: str, assets: list[dict], existing: dict | None = No
             "meter_reading": _num(meter), "cost": _num(cost), "done_by": by or None, "notes": notes or ""}
 
 
-def record_login(username: str, login_key: str | None = None) -> None:
-    """Best-effort log of a successful club sign-in (Supabase when configured)."""
-    try:
-        if use_supabase():
-            client = get_supabase_client()
-            row = {"username": username}
-            if login_key:
-                row["login_key"] = login_key
-            client.table("login_events").insert(row).execute()
-            return
-        # Local SQLite fallback (dev only)
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS login_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL,
-                login_key TEXT,
-                logged_in_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        c.execute(
-            "INSERT INTO login_events (username, login_key) VALUES (?, ?)",
-            (username, login_key),
-        )
-        conn.commit()
-        conn.close()
-    except Exception:
-        # Never block login on logging failures
-        pass
-
-
-# ---------------- LOGIN SYSTEM ----------------
-AUTH_COOKIE = "dd_stay"
-AUTH_DAYS = 30
-
-CLUB_USERS = {
-    "jeff": {"pw": "duckhunt", "role": "admin"},
-    "jeffery.utley@gmail.com": {"pw": "duckhunt", "role": "admin"},
-    "admin@ddhunt.com": {"pw": "duckhunt", "role": "admin"},
-    "andrew": {"pw": "andrew123", "role": "admin"},
-    "kyle": {"pw": "kyle123", "role": "admin"},
-    "adam": {"pw": "adam123", "role": "admin"},
-    "justin": {"pw": "justin123", "role": "admin"},
-    "mcguire": {"pw": "mcguire123", "role": "admin"},
-    "caleb": {"pw": "caleb123", "role": "admin"},
-    "calebjutley@icloud.com": {"pw": "caleb123", "role": "admin"},
-    "penick": {"pw": "penick123", "role": "admin"},
-    "penick.river@icloud.com": {"pw": "penick123", "role": "admin"},
-    "river": {"pw": "river123", "role": "admin"},
-}
-LOGIN_DISPLAY_NAMES = {
-    "jeffery.utley@gmail.com": "jeff",
-    "admin@ddhunt.com": "jeff",
-    "calebjutley@icloud.com": "caleb",
-    "penick.river@icloud.com": "penick",
-}
-
-
-def _club_display_name(login_key: str) -> str:
-    return LOGIN_DISPLAY_NAMES.get(login_key, login_key)
-
-
-def _club_role(username: str) -> str | None:
-    rec = CLUB_USERS.get((username or "").strip().lower())
-    return rec["role"] if rec else None
-
-
-def _hash_auth_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _parse_iso_dt(value) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        text_v = str(value).strip()
-        if not text_v:
-            return None
-        if text_v.endswith("Z"):
-            text_v = text_v[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(text_v)
-        except ValueError:
-            return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+# Club users, stay-logged-in sessions, and login_events logging live in club_auth.py
+# (shared with the native HTML login server).
 
 
 def _read_auth_cookie() -> str | None:
@@ -1751,137 +1674,6 @@ def _apply_pending_cookie_js() -> None:
             st.session_state.pop("_pending_cookie_clear", None)
 
 
-def _ensure_sqlite_auth_sessions(conn) -> None:
-    conn.cursor().execute(
-        """
-        CREATE TABLE IF NOT EXISTS auth_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            token_hash TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            last_seen_at TEXT NOT NULL,
-            revoked INTEGER NOT NULL DEFAULT 0
-        )
-        """
-    )
-
-
-def issue_auth_session(username: str) -> str | None:
-    """Create a 30-day session and return the raw token (store only the hash)."""
-    try:
-        token = secrets.token_urlsafe(32)
-        token_hash = _hash_auth_token(token)
-        now = datetime.now(timezone.utc)
-        expires = now + timedelta(days=AUTH_DAYS)
-        row = {
-            "username": username,
-            "token_hash": token_hash,
-            "created_at": now.isoformat(),
-            "expires_at": expires.isoformat(),
-            "last_seen_at": now.isoformat(),
-            "revoked": False,
-        }
-        if use_supabase():
-            get_supabase_client().table("auth_sessions").insert(row).execute()
-        else:
-            conn = get_db_connection()
-            _ensure_sqlite_auth_sessions(conn)
-            conn.cursor().execute(
-                """
-                INSERT INTO auth_sessions
-                    (username, token_hash, created_at, expires_at, last_seen_at, revoked)
-                VALUES (?, ?, ?, ?, ?, 0)
-                """,
-                (username, token_hash, row["created_at"], row["expires_at"], row["last_seen_at"]),
-            )
-            conn.commit()
-            conn.close()
-        return token
-    except Exception:
-        return None
-
-
-def lookup_auth_session(token: str) -> dict | None:
-    """Return a valid (unexpired, not revoked) session for this token, or None."""
-    try:
-        token_hash = _hash_auth_token(token)
-        now = datetime.now(timezone.utc)
-        row = None
-        if use_supabase():
-            resp = (
-                get_supabase_client()
-                .table("auth_sessions")
-                .select("id,username,expires_at,revoked")
-                .eq("token_hash", token_hash)
-                .limit(1)
-                .execute()
-            )
-            rows = resp.data or []
-            row = rows[0] if rows else None
-        else:
-            conn = get_db_connection()
-            _ensure_sqlite_auth_sessions(conn)
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT id, username, expires_at, revoked FROM auth_sessions WHERE token_hash = ?",
-                (token_hash,),
-            )
-            found = cur.fetchone()
-            conn.close()
-            if found:
-                row = {
-                    "id": found[0],
-                    "username": found[1],
-                    "expires_at": found[2],
-                    "revoked": found[3],
-                }
-        if not row:
-            return None
-        if row.get("revoked") in (True, 1, "1", "t", "true"):
-            return None
-        expires = _parse_iso_dt(row.get("expires_at"))
-        if expires is None or expires <= now:
-            return None
-        if not _club_role(row.get("username") or ""):
-            return None
-        return row
-    except Exception:
-        return None
-
-
-def touch_auth_session(session_id) -> None:
-    try:
-        now = datetime.now(timezone.utc).isoformat()
-        if use_supabase():
-            get_supabase_client().table("auth_sessions").update({"last_seen_at": now}).eq("id", session_id).execute()
-        else:
-            conn = get_db_connection()
-            _ensure_sqlite_auth_sessions(conn)
-            conn.cursor().execute("UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?", (now, session_id))
-            conn.commit()
-            conn.close()
-    except Exception:
-        pass
-
-
-def revoke_auth_session(token: str | None) -> None:
-    if not token:
-        return
-    try:
-        token_hash = _hash_auth_token(token)
-        if use_supabase():
-            get_supabase_client().table("auth_sessions").update({"revoked": True}).eq("token_hash", token_hash).execute()
-        else:
-            conn = get_db_connection()
-            _ensure_sqlite_auth_sessions(conn)
-            conn.cursor().execute("UPDATE auth_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
-            conn.commit()
-            conn.close()
-    except Exception:
-        pass
-
-
 def _queue_cookie_set(token: str) -> None:
     st.session_state["_pending_cookie_set"] = token
     st.session_state.pop("_pending_cookie_clear", None)
@@ -1930,20 +1722,36 @@ def logout_user() -> None:
 
 
 def show_login():
-    # Professional centered logo + title
-    st.markdown("<br><br>", unsafe_allow_html=True)
+    """Send unauthenticated visitors to the native HTML login page.
 
-    if LOGO_PATH.exists():
-        col1, col2, col3 = st.columns([1, 1.7, 1])
-        with col2:
-            st.image(str(LOGO_PATH), width=230)
-            st.markdown(
-                "<h2 style='text-align: center; margin-top: 12px; margin-bottom: 8px; font-weight: 600;'>DD Hunt Tracker</h2>",
-                unsafe_allow_html=True
-            )
-    else:
-        st.markdown("<h1 style='text-align:center;'>DD Hunt Tracker</h1>", unsafe_allow_html=True)
+    The Streamlit form remains below as a fallback if /login is unreachable
+    (for example, a raw `streamlit run` without nginx).
+    """
+    dest = "/logout" if _read_auth_cookie() else "/login"
+    components.html(
+        f"""<!DOCTYPE html><html><head>
+<meta http-equiv="refresh" content="0;url={dest}">
+</head><body>
+<script>
+(function () {{
+  try {{
+    if (window.top && window.top !== window.self) {{
+      window.top.location.replace("{dest}");
+    }} else {{
+      window.location.replace("{dest}");
+    }}
+  }} catch (e) {{
+    window.location.replace("{dest}");
+  }}
+}})();
+</script>
+<p><a href="{dest}">Continue to sign in</a></p>
+</body></html>""",
+        height=40,
+    )
+    st.markdown(f"Redirecting to [sign in]({dest})…")
 
+    # Fallback Streamlit form (used only if the redirect above does not run)
     st.markdown("### Secure Club Access")
     with st.form("login"):
         u = st.text_input("Username", autocomplete="username")
@@ -2006,9 +1814,12 @@ def main():
         except Exception:
             pass
         st.rerun()
-    if st.sidebar.button("Logout", use_container_width=True):
-        logout_user()
-        st.rerun()
+    st.sidebar.markdown(
+        '<a href="/logout" target="_self" style="display:block;text-align:center;'
+        "background:#1B3A2A;color:#F7F4EA;padding:0.55rem 0.75rem;border-radius:0.5rem;"
+        'text-decoration:none;font-weight:600;margin:0.25rem 0;">Logout</a>',
+        unsafe_allow_html=True,
+    )
 
     st.sidebar.caption("📱 Mobile-friendly • Install as PWA via browser menu for app-like experience on phone/tablet.")
 
