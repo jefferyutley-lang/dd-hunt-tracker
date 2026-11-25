@@ -77,6 +77,7 @@ WILDLIFE_LOCATION_OPTIONS = [
     "Bar Plot",
     "Bayou Plot",
     "Sunflower Patch",
+    "Redneck Deer Blind",
     "Other...",
 ]
 
